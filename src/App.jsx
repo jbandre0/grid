@@ -3,7 +3,7 @@ import {
   loadStore, saveStore, touchMonth, monthKey, fmtMoney,
   capitalTotal, assetsTotal, netWorth, logInOut,
   categoryPct, categoryState, isOverdue, activeFlags, dismissFlag,
-  logSpend, undoSpend, removeCategory, monthEntries,
+  logSpend, undoSpend, removeCategory, monthEntries, pendingCloseOut, closeOutPreview, closeOutMonth,
   cycleBurn, iOweOpen, owedToMeOpen, overdueCount, overdueSplit, netWorthSeries, inOutSeries, maskMoney,
   touchWeek, weekNumber, weekKey, goalProgress,
   GLANCE_ROWS, GLANCE_DAYS, glanceDates, ritualDone,
@@ -590,6 +590,15 @@ const CSS = `
 .bz-paid-btn { background: none; border: none; cursor: pointer; color: var(--holo-dim); font-size: 12px; padding: 0; text-align: center; }
 .bz-paid-btn[aria-pressed="true"] { color: var(--holo); text-shadow: 0 0 7px rgba(79,227,255,0.6); }
 .bz-add-pair { display: flex; gap: 16px; }
+.co-line { display: grid; grid-template-columns: 1fr 92px 14px 92px 88px; gap: 8px; align-items: center; font-family: var(--mono); font-size: 10.5px;
+  padding: 5px 0; border-bottom: 1px dashed rgba(79,227,255,0.12); }
+.co-line .k { color: var(--ghost-dim); font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; }
+.co-line .co-start, .co-line .co-end { text-align: right; color: var(--ghost); }
+.co-line .co-start.bz-in { border-bottom: 1px dashed rgba(79,227,255,0.3); }
+.co-arrow { color: var(--holo-dim); text-align: center; }
+.co-io { text-align: right; } .co-io.pos { color: var(--holo); } .co-io.neg { color: var(--alarm); }
+.co-note { font-family: var(--mono); font-size: 9px; line-height: 1.6; letter-spacing: 0.04em; color: var(--holo-dim); margin-top: 10px; }
+.co-note b { color: var(--gold); font-weight: 400; }
 .bz-cat-head .bz-in { font-size: 10px; }
 .bz-spend { display: grid; grid-template-columns: 74px minmax(0, 1fr) 30px 20px; gap: 6px; align-items: center; margin-top: 7px; }
 .bz-spend .bz-in.money { text-align: left; }
@@ -3588,10 +3597,58 @@ function CategoryCard({ c, entries, open, onToggle, onSet, onLog, onUndo, onDele
   );
 }
 
+// top-level on purpose: declared inside CloseOutDialog it would remount (and drop
+// focus from its input) on every keystroke
+function CloseOutLine({ label, start, end, first, onStart }) {
+  const d = Math.round((end - start) * 100) / 100;
+  return (
+    <div className="co-line">
+      <span className="k">{label}</span>
+      {first
+        ? <MoneyInput className="bz-in money co-start" value={start} negative onChange={onStart} />
+        : <span className="co-start">{fmtMoney(start)}</span>}
+      <span className="co-arrow">→</span>
+      <span className="co-end">{fmtMoney(end)}</span>
+      <span className={"co-io " + (d < 0 ? "neg" : "pos")}>{(d >= 0 ? "+" : "-") + fmtMoney(Math.abs(d))}</span>
+    </div>
+  );
+}
+
+// Month-end confirm. Shows exactly what will be snapshotted and reset, and never
+// runs by itself — closing out zeroes category spending, so it waits for a yes.
+// The snapshot uses the figures as they stand now, hence the nudge to update
+// Capital on Hand / Assets first ("later" leaves everything untouched).
+function CloseOutDialog({ budget, now, onConfirm, onLater }) {
+  const [open, setOpen] = useState({});
+  const p = closeOutPreview(budget, open, now);
+  if (!p) return null;
+  return (
+    <div className="tile-modal-backdrop">
+      <div className="tile-modal sync-dialog">
+        <div className="tm-head"><span className="tm-title">month-end · close out {p.month}</span></div>
+        <div className="sd-why">
+          Before you confirm, make sure Capital on Hand and Assets show their real month-end balances — the snapshot uses the figures as they are right now.
+        </div>
+        <CloseOutLine label="Capital on Hand" start={p.capStart} end={p.capEnd} first={p.firstCapital} onStart={v => setOpen(o => ({ ...o, capitalStart: v }))} />
+        <CloseOutLine label="Net Worth" start={p.nwStart} end={p.nwEnd} first={p.firstNetWorth} onStart={v => setOpen(o => ({ ...o, netWorthStart: v }))} />
+        {(p.firstCapital || p.firstNetWorth) && <div className="co-note">first close-out — type what each figure was at the start of {p.month} (defaults to no change)</div>}
+        <div className="co-note">
+          Resets spending to $0.00 across {p.categoryCount} categor{p.categoryCount === 1 ? "y" : "ies"} · monthly budgets carry over · logged entries are kept.
+          {p.over.length > 0 && <> Over budget this month: <b>{p.over.join(", ")}</b>.</>}
+        </div>
+        <div className="sd-actions" style={{ marginTop: 14 }}>
+          <button className="sd-btn rec" onClick={() => onConfirm(open)}>close out {p.month}<small>snapshot + reset</small></button>
+          <button className="sd-btn" onClick={onLater}>later<small>nothing changes</small></button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // `write(fn)` runs fn on the budget slice and saves it — the same shape every
 // other sector's writers use. Derived figures (net worth, flags, tiles) all
 // recompute from the slice, so entry here flows straight to the dashboard.
-function BudgetScreen({ budget, now, flags, onDismissFlag, write }) {
+function BudgetScreen({ budget, now, flags, onDismissFlag, write, pendingMonth, onReviewCloseOut }) {
   const setAccount = (id, f, v) => write(b => ({ ...b, capital: { ...b.capital, accounts: b.capital.accounts.map(x => x.id === id ? { ...x, [f]: v } : x) } }));
   const addAccount = () => write(b => ({ ...b, capital: { ...b.capital, accounts: [...b.capital.accounts, { id: uid(), name: "", value: 0 }] } }));
   const removeAccount = (id) => write(b => ({ ...b, capital: { ...b.capital, accounts: b.capital.accounts.filter(x => x.id !== id) } }));
@@ -3626,6 +3683,15 @@ function BudgetScreen({ budget, now, flags, onDismissFlag, write }) {
         <div className="bz-stat"><div className="bz-val">{String(flags.length).padStart(2, "0")}</div><div className="bz-lab">Open Flags</div></div>
       </div>
 
+      {pendingMonth && (
+        <div className="bz-flags">
+          <div className="bz-flag">
+            <span className="bz-flag-tag">kaniel // month-end</span>
+            <span className="bz-flag-msg">{pendingMonth} has ended and is waiting to be closed out</span>
+            <button className="bz-flag-x" onClick={onReviewCloseOut}>review ›</button>
+          </div>
+        </div>
+      )}
       {flags.length > 0 && (
         <div className="bz-flags">
           {flags.map(f => (
@@ -3908,6 +3974,12 @@ function GridApp({ authSession, onSignOut }) {
 
   // ── budget writer ── (mutators live in store.js or in BudgetScreen itself)
   const writeBudget = (fn) => setStore(s => saveStore({ ...s, budget: fn(s.budget) }));
+  // month-end: asked once per session ("later" hides it until next login, the banner
+  // in Budget stays). Held back until sync's first check finishes and while a sync
+  // conflict is open, so a stale browser can't close out before seeing the cloud copy.
+  const pendingMonth = pendingCloseOut(budget, now);
+  const [closeOutLater, setCloseOutLater] = useState(false);
+  const showCloseOut = !!pendingMonth && !closeOutLater && screen !== "lock" && screen !== "boot" && !sync.conflict && sync.status !== "checking";
 
   // ── contact tracker writers ──
   const writeContactTracker = (fn) => setStore(s => saveStore({ ...s, contactTracker: fn(s.contactTracker) }));
@@ -4453,7 +4525,8 @@ function GridApp({ authSession, onSignOut }) {
         )}
 
         {screen === "budget" && (
-          <BudgetScreen budget={budget} now={now} flags={budgetFlags} onDismissFlag={onDismissFlag} write={writeBudget} />
+          <BudgetScreen budget={budget} now={now} flags={budgetFlags} onDismissFlag={onDismissFlag} write={writeBudget}
+            pendingMonth={pendingMonth} onReviewCloseOut={() => setCloseOutLater(false)} />
         )}
 
         {screen === "weekly" && (
@@ -4691,6 +4764,10 @@ function GridApp({ authSession, onSignOut }) {
         )}
       </div>
       <TileModal tile={expandedTile} onClose={() => setExpandedTile(null)} />
+      {showCloseOut && (
+        <CloseOutDialog budget={budget} now={now} onLater={() => setCloseOutLater(true)}
+          onConfirm={(opening) => writeBudget(b => closeOutMonth(b, opening))} />
+      )}
       {sync.conflict && (
         <SyncConflictDialog conflict={sync.conflict} local={store}
           onResolve={(choice) => engineRef.current?.resolve(choice)}

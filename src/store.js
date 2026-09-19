@@ -127,7 +127,8 @@ const DEFAULT_STORE = {
     spendEntries: [],  // { id, categoryId, amount, note, at }
     netWorthLog: [],   // { month, start, end, notes } — same close-out behavior as capital
     dismissedFlags: [], // flag ids — dismissals persist so the same flag doesn't re-fire
-    lastSeenMonth: null, // drives auto month-close-out on first login of a new month
+    lastSeenMonth: null, // the month last closed out (or first opened) — a later calendar month means a close-out is pending
+    lastCloseOut: null,  // { month, closedIn, capitalInOut, netWorthInOut, over: [names] } — feeds the recap flag
     seeded: null,       // marks which mock seed (if any) populated this store
   },
   // Weekly Overview — live, current-week-only. Nothing here is archived; history
@@ -304,16 +305,22 @@ export function saveStore(store) {
   return store;
 }
 
-// month tracking scaffold — called on every successful PIN entry. Full
-// auto-close-out (snapshot logs, reset category budgets, recap flag) lands
-// with the Capital on Hand entry increment; for now this only tracks the month.
+// Month tracking, called on every successful PIN entry. Only ever *starts*
+// tracking (first open); it never advances the month itself. Moving on to a new
+// month is closeOutMonth's job and needs the user's confirmation, because it
+// snapshots figures and resets spending — so a pending close-out stays pending
+// until confirmed.
 export function touchMonth(store) {
   const b = store.budget;
-  const now = monthKey();
-  if (b.lastSeenMonth === now) return store;
-  b.lastSeenMonth = now;
+  if (b.lastSeenMonth) return store;
+  b.lastSeenMonth = monthKey();
   return saveStore(store);
 }
+
+// The month waiting to be closed out, or null. lastSeenMonth is the last month
+// the budget was rolled into, so any later calendar month means it has ended.
+export const pendingCloseOut = (b, now = new Date()) =>
+  b.lastSeenMonth && b.lastSeenMonth < monthKey(now) ? b.lastSeenMonth : null;
 
 // ── week math (Weekly Overview) ──
 // The canonical week boundary is Sunday 00:00: resets fire there, and the week
@@ -905,6 +912,42 @@ export function removeCategory(b, categoryId) {
 export const monthEntries = (b, categoryId, now = new Date()) =>
   b.spendEntries.filter(e => e.categoryId === categoryId && monthKey(new Date(e.at)) === monthKey(now)).reverse();
 
+// ── month close-out ──
+// Snapshots Capital on Hand and Net Worth as they stand RIGHT NOW into the two
+// logs (start = the previous row's end), zeroes every category's `spent`
+// (budgets carry over; logged entries are kept as history), records a recap for
+// the flag engine, and moves lastSeenMonth forward. If several months went by
+// unopened only the last-tracked month is logged — nothing is invented for the
+// months in between. `opening` supplies the start figures when a log is empty.
+export function closeOutPreview(b, opening = {}, now = new Date()) {
+  const month = pendingCloseOut(b, now);
+  if (!month) return null;
+  const capEnd = cents(capitalTotal(b)), nwEnd = cents(netWorth(b));
+  const lastCap = b.capital.monthlyLog.at(-1), lastNw = b.netWorthLog.at(-1);
+  const capStart = lastCap ? cents(lastCap.end) : cents(opening.capitalStart ?? capEnd);
+  const nwStart = lastNw ? cents(lastNw.end) : cents(opening.netWorthStart ?? nwEnd);
+  return {
+    month, capStart, capEnd, nwStart, nwEnd,
+    firstCapital: !lastCap, firstNetWorth: !lastNw,
+    over: b.categories.filter(c => categoryState(c) === "over").map(c => c.name || "(unnamed)"),
+    categoryCount: b.categories.length,
+  };
+}
+export function closeOutMonth(b, opening = {}, now = new Date()) {
+  const p = closeOutPreview(b, opening, now);
+  if (!p) return b;
+  const row = (start, end) => ({ month: p.month, start, end, notes: "" });
+  const dropMonth = (log) => log.filter(r => r.month !== p.month); // never two rows for one month
+  return {
+    ...b,
+    capital: { ...b.capital, monthlyLog: [...dropMonth(b.capital.monthlyLog), row(p.capStart, p.capEnd)] },
+    netWorthLog: [...dropMonth(b.netWorthLog), row(p.nwStart, p.nwEnd)],
+    categories: b.categories.map(c => ({ ...c, spent: 0 })),
+    lastSeenMonth: monthKey(now),
+    lastCloseOut: { month: p.month, closedIn: monthKey(now), capitalInOut: cents(p.capEnd - p.capStart), netWorthInOut: cents(p.nwEnd - p.nwStart), over: p.over },
+  };
+}
+
 // ── flags ──
 // Derived fresh from data rather than stored, so a flag clears itself once the
 // underlying condition resolves. Ids are stable/content-derived, which is what
@@ -933,6 +976,16 @@ export function deriveFlags(b, now = new Date()) {
       : { id: `cat-warn-${c.id}-${m}`, sector: "budget", type: "category-warn", severity: "attentive",
           message: `${c.name} past 75% — ${fmtMoney(c.spent)} of ${fmtMoney(c.budgeted)} (${pct}%)`, createdAt: m });
   });
+  // recap of the last close-out — shown through the month it happened in, gold not red
+  const lc = b.lastCloseOut;
+  if (lc && lc.closedIn === m) {
+    const sign = (n) => (n >= 0 ? "+" : "-") + fmtMoney(Math.abs(n));
+    out.push({
+      id: `recap-${lc.month}`, sector: "budget", type: "month-recap", severity: "attentive", createdAt: lc.closedIn,
+      message: `${lc.month} closed — capital ${sign(lc.capitalInOut)}, net worth ${sign(lc.netWorthInOut)}` +
+        (lc.over.length ? `, over budget: ${lc.over.join(", ")}` : ", nothing over budget"),
+    });
+  }
   return out;
 }
 
