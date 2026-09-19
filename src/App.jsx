@@ -20,7 +20,6 @@ import {
   CONTACT_FREQUENCIES, contactNextDate, contactOverdue, contactDueToday,
   exportBackup, parseBackup, normalizeStore, summarizeStore,
 } from "./store.js";
-import { seedMockBudget } from "./mockSeed.js";
 import { supabase } from "./supabase.js";
 import { cloud } from "./cloud.js";
 import { createSyncEngine } from "./syncEngine.js";
@@ -529,8 +528,6 @@ const CSS = `
 .bz-mockbar { display: inline-flex; align-items: center; gap: 7px; margin-left: 14px; padding: 3px 9px;
   border: 1px dashed var(--gold); color: var(--gold); font-family: var(--mono); font-size: 8px;
   letter-spacing: 0.16em; text-transform: uppercase; opacity: 0.85; }
-.bz-mock { font-family: var(--mono); font-size: 7.5px; letter-spacing: 0.1em; color: var(--gold);
-  opacity: 0.7; text-transform: uppercase; }
 
 /* kaniel flag cards — derived from data, dismissible, dismissals persisted.
    gold = attentive (75% caution), red = genuine alarm (overdue / over budget) */
@@ -1563,6 +1560,7 @@ function ArcGauge({ value, size = 74, label, alarm, display, valueSize = 14 }) {
   );
 }
 function Sparkline({ points, alarm, w = 150, h = 32 }) {
+  if (points.length < 2) return <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`}><line x1="0" x2={w} y1={h / 2} y2={h / 2} stroke="var(--holo-dim)" strokeWidth="1" strokeDasharray="2 3" opacity="0.5" /></svg>;
   const max = Math.max(...points), min = Math.min(...points);
   const norm = points.map((p, i) => `${(i / (points.length - 1)) * w},${h - ((p - min) / (max - min || 1)) * (h - 4) - 2}`).join(" ");
   return <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`}><polyline points={norm} fill="none" stroke={alarm ? "var(--alarm)" : "var(--holo)"} strokeWidth="1.3" opacity="0.85" /></svg>;
@@ -1631,7 +1629,7 @@ function niceBound(v) {
 // In/Out is signed, unlike the reference's all-positive bars), segmented bar
 // fill, bright tip caps, and a label under every column.
 function InOutChart({ series }) {
-  if (!series.length) return null;
+  if (!series.length) return <div className="bz-empty" style={{ padding: "38px 0", textAlign: "center" }}>no months closed yet</div>;
   const w = 272, h = 124;
   const padL = 40, padR = 8, padT = 7, padB = 17;
   const plotW = w - padL - padR, plotH = h - padT - padB;
@@ -3463,16 +3461,9 @@ function GridApp({ authSession, onSignOut }) {
   const [insightVisible, setInsightVisible] = useState(true);
   const [expandedTile, setExpandedTile] = useState(null);
   const [sectorSearch, setSectorSearch] = useState("");
-  // first real data in the grid — persistent store, budget slice (see store.js).
-  // Phase 0: seeded with clearly-labelled placeholder figures (mockSeed.js);
-  // seeding is a no-op once the store carries anything real.
-  const [store, setStore] = useState(() => {
-    const s = loadStore();
-    const before = s.budget.seeded;
-    seedMockBudget(s);              // internally guards against clobbering real data
-    if (s.budget.seeded !== before) saveStore(s);
-    return s;
-  });
+  // persistent store (see store.js). Budget starts blank — loadStore drops any
+  // leftover placeholder records once; everything else is real entry.
+  const [store, setStore] = useState(loadStore);
   // ── cloud sync ── (engine + safety rules: src/syncEngine.js; table: docs/supabase/schema.sql)
   const storeRef = useRef(store); storeRef.current = store;
   const [sync, setSync] = useState({ status: "checking", conflict: null, syncedAt: null });
@@ -3765,7 +3756,7 @@ function GridApp({ authSession, onSignOut }) {
       {
         label: "Net Worth", cockpit: true, size: "lg",
         raw: netWorth(budget), masked: true, value: fmtMoney(netWorth(budget)),
-        spark: netWorthSeries(budget), sub: "placeholder figures",
+        spark: netWorthSeries(budget),
         detail: <MonthLog rows={budget.netWorthLog} />,
       },
       // ring stays cyan until the total actually exceeds budget — the 75% rule
@@ -4194,7 +4185,6 @@ function GridApp({ authSession, onSignOut }) {
           <div className="zoneview fade-up">
             <div className="zv-head"><span className="zv-code">💰</span>
               <span className="zv-name">Budget · live sector</span>
-              {budget.seeded && <span className="bz-mockbar">placeholder figures · structure real</span>}
               <span className="bz-month">cycle {monthKey()}</span></div>
 
             <div className="bz-hero">
@@ -4219,7 +4209,7 @@ function GridApp({ authSession, onSignOut }) {
             <div className="bz-grid">
               <section className="bz-mod">
                 <div className="bz-mod-head"><span>Capital on Hand</span>
-                  <span className="bz-tag">live accounts · <span className="bz-mock">mock values</span></span></div>
+                  <span className="bz-tag">live accounts</span></div>
                 {budget.capital.accounts.map(a => (
                   <div key={a.id} className="bz-row"><span className="k">{a.name}</span><span>{fmtMoney(a.value)}</span></div>
                 ))}
@@ -4229,7 +4219,7 @@ function GridApp({ authSession, onSignOut }) {
 
               <section className="bz-mod">
                 <div className="bz-mod-head"><span>Assets</span>
-                  <span className="bz-tag">manual · portfolio pull later · <span className="bz-mock">mock values</span></span></div>
+                  <span className="bz-tag">manual · portfolio pull later</span></div>
                 {budget.assets.length === 0
                   ? <div className="bz-empty">no assets logged</div>
                   : budget.assets.map(a => (
@@ -4240,7 +4230,7 @@ function GridApp({ authSession, onSignOut }) {
 
               <section className="bz-mod">
                 <div className="bz-mod-head"><span>Owe Ledger</span>
-                  <span className="bz-tag">i owe / owed to me · <span className="bz-mock">mock people + amounts</span></span></div>
+                  <span className="bz-tag">i owe / owed to me</span></div>
                 {budget.oweLedger.length === 0
                   ? <div className="bz-empty">ledger clear — nothing open in either direction</div>
                   : budget.oweLedger.map(o => (
@@ -4255,7 +4245,7 @@ function GridApp({ authSession, onSignOut }) {
 
               <section className="bz-mod">
                 <div className="bz-mod-head"><span>Net Worth Log</span>
-                  <span className="bz-tag">auto close-out · <span className="bz-mock">mock months</span></span></div>
+                  <span className="bz-tag">auto close-out</span></div>
                 <MonthLog rows={budget.netWorthLog} />
               </section>
 

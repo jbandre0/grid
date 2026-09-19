@@ -195,13 +195,29 @@ const DEFAULT_STORE = {
   },
 };
 
+// Budget used to ship placeholder records tagged `mock: true` (retired — Budget
+// now starts blank and is filled by real entry). Any that survive in a saved
+// store, cloud copy or old backup are dropped on load. Only tagged records go;
+// anything the user entered has no tag and is never touched.
+const isMock = (r) => !!(r && r.mock);
+const budgetLists = (b) => [b?.capital?.accounts, b?.capital?.monthlyLog, b?.assets, b?.oweLedger, b?.categories, b?.spendEntries, b?.netWorthLog];
+export const budgetHasMock = (b) => budgetLists(b).some(l => Array.isArray(l) && l.some(isMock));
+function stripMockBudget(b) {
+  if (!budgetHasMock(b)) return b;
+  const keep = (l) => Array.isArray(l) ? l.filter(r => !isMock(r)) : l;
+  const capital = { ...b.capital, accounts: keep(b.capital?.accounts), monthlyLog: keep(b.capital?.monthlyLog) };
+  if (!capital.accounts.length) capital.accounts = structuredClone(DEFAULT_STORE.budget.capital.accounts);
+  return { ...b, capital, assets: keep(b.assets), oweLedger: keep(b.oweLedger), categories: keep(b.categories),
+    spendEntries: keep(b.spendEntries), netWorthLog: keep(b.netWorthLog), seeded: null };
+}
+
 // merge defaults forward so older stores (and older backup files) pick up newly
 // added fields without losing anything already saved
 function mergeDefaults(parsed) {
   return {
     ...structuredClone(DEFAULT_STORE),
     ...parsed,
-    budget: { ...structuredClone(DEFAULT_STORE.budget), ...(parsed.budget || {}) },
+    budget: stripMockBudget({ ...structuredClone(DEFAULT_STORE.budget), ...(parsed.budget || {}) }),
     weekly: { ...structuredClone(DEFAULT_STORE.weekly), ...(parsed.weekly || {}) },
     daily: { ...structuredClone(DEFAULT_STORE.daily), ...(parsed.daily || {}) },
     contactTracker: { ...structuredClone(DEFAULT_STORE.contactTracker), ...(parsed.contactTracker || {}) },
@@ -256,7 +272,10 @@ export function loadStore() {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return structuredClone(DEFAULT_STORE);
-    return mergeDefaults(JSON.parse(raw));
+    const parsed = JSON.parse(raw);
+    const merged = mergeDefaults(parsed);
+    if (budgetHasMock(parsed.budget)) saveStore(merged); // persist the one-time placeholder wipe
+    return merged;
   } catch {
     return structuredClone(DEFAULT_STORE);
   }
