@@ -91,7 +91,10 @@ const CSS = `
 
 .topbar { display: flex; align-items: center; justify-content: space-between;
   font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.13em; color: var(--ghost-dim);
-  text-transform: uppercase; padding-bottom: 8px; border-bottom: 1px solid var(--panel-line); flex-wrap: wrap; row-gap: 6px; }
+  text-transform: uppercase; padding-bottom: 8px; border-bottom: 1px solid var(--panel-line); flex-wrap: wrap; row-gap: 6px;
+  /* stays put while .stage scrolls, so back / export / sync / sign-out are always reachable.
+     Pulled up over the stage's 14px top padding (margin + matching sticky offset) so nothing peeks out above it. */
+  position: sticky; top: -14px; z-index: 20; margin-top: -14px; padding-top: 14px; background: rgba(4,6,12,0.94); backdrop-filter: blur(4px); }
 .topbar .live { color: var(--holo); }
 .dot-live { display: inline-block; width: 6px; height: 6px; border-radius: 50%;
   background: var(--holo); box-shadow: 0 0 8px var(--holo); margin-right: 7px; vertical-align: middle; animation: blink 2.4s infinite; }
@@ -523,7 +526,8 @@ const CSS = `
   color: var(--ghost); border-bottom: 1px dashed rgba(79,227,255,0.1); padding: 4px 0; }
 .bz-row .k { color: var(--ghost-dim); font-size: 9px; text-transform: uppercase; letter-spacing: 0.1em; }
 .bz-empty { font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.12em; color: var(--holo-dim); opacity: 0.65; text-transform: uppercase; padding: 10px 0 4px; }
-@media (max-width: 900px) { .bz-grid { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .bz-grid { grid-template-columns: minmax(0, 1fr); } }
+.bz-mod { min-width: 0; }
 
 /* placeholder-data marker — Phase 0 convention, same read as the dashboard's "mock" tags */
 .bz-mockbar { display: inline-flex; align-items: center; gap: 7px; margin-left: 14px; padding: 3px 9px;
