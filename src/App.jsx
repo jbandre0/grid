@@ -564,6 +564,17 @@ const CSS = `
 .bz-owe.paid { opacity: 0.4; }
 .bz-owe.paid .due::after { content: " · paid"; }
 
+/* budget entry — inline-edit rows, same borderless-until-hover idiom as the roster */
+.bz-edit-row { display: grid; grid-template-columns: minmax(0, 1fr) 112px 18px; gap: 8px; align-items: center;
+  padding: 3px 0; border-bottom: 1px dashed rgba(79,227,255,0.1); }
+.bz-in { width: 100%; background: transparent; border: none; outline: none; color: var(--ghost);
+  font-family: var(--mono); font-size: 11px; padding: 2px 0; border-bottom: 1px dashed transparent; color-scheme: dark; }
+.bz-in.money { text-align: right; color: var(--holo); }
+.bz-in::placeholder { color: var(--holo-dim); opacity: 0.5; }
+.bz-in:hover { border-bottom-color: rgba(79,227,255,0.22); }
+.bz-in:focus { border-bottom-color: var(--holo); }
+.bz-total { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--panel-line); }
+
 /* category budget meters */
 .bz-cats { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px 16px; }
 .bz-cat-head { display: flex; justify-content: space-between; align-items: baseline; font-family: var(--mono); font-size: 10px; color: var(--ghost); }
@@ -3449,6 +3460,147 @@ function MetricsOutsourcingSector({ store, now, onDismissInsight }) {
   );
 }
 
+// ── BUDGET SECTOR ──
+// Money field that keeps its own text while focused, so typing "12." or "-" isn't
+// eaten by a number round-trip. Commits a parsed number on every valid keystroke
+// (empty → 0) and re-formats from the stored value on blur.
+function MoneyInput({ value, onChange, className = "bz-in money", placeholder = "0.00", negative = false }) {
+  const [text, setText] = useState(null);
+  const shown = text ?? (value === "" || value == null || Number(value) === 0 ? "" : String(value));
+  const ok = negative ? /^-?\d*\.?\d{0,2}$/ : /^\d*\.?\d{0,2}$/;
+  return (
+    <input className={className} inputMode="decimal" value={shown} placeholder={placeholder}
+      onFocus={() => setText(shown)} onBlur={() => setText(null)}
+      onChange={e => {
+        const t = e.target.value;
+        if (!ok.test(t)) return;
+        setText(t);
+        const n = parseFloat(t);
+        onChange(Number.isFinite(n) ? n : 0);
+      }} />
+  );
+}
+
+// Name + value rows shared by Capital on Hand (accounts) and Assets.
+function BzValueList({ items, empty, addLabel, nameHolder, onAdd, onSet, onRemove }) {
+  return (
+    <>
+      {items.length === 0 && <div className="bz-empty">{empty}</div>}
+      {items.map(it => (
+        <div key={it.id} className="bz-edit-row">
+          <input className="bz-in" value={it.name} placeholder={nameHolder} onChange={e => onSet(it.id, "name", e.target.value)} />
+          <MoneyInput value={it.value} negative onChange={v => onSet(it.id, "value", v)} />
+          <button className="do-x" onClick={() => onRemove(it.id)} aria-label={"Remove " + (it.name || "row")}>✕</button>
+        </div>
+      ))}
+      <button className="do-add" onClick={onAdd}>{addLabel}</button>
+    </>
+  );
+}
+
+// `write(fn)` runs fn on the budget slice and saves it — the same shape every
+// other sector's writers use. Derived figures (net worth, flags, tiles) all
+// recompute from the slice, so entry here flows straight to the dashboard.
+function BudgetScreen({ budget, now, flags, onDismissFlag, write }) {
+  const setAccount = (id, f, v) => write(b => ({ ...b, capital: { ...b.capital, accounts: b.capital.accounts.map(x => x.id === id ? { ...x, [f]: v } : x) } }));
+  const addAccount = () => write(b => ({ ...b, capital: { ...b.capital, accounts: [...b.capital.accounts, { id: uid(), name: "", value: 0 }] } }));
+  const removeAccount = (id) => write(b => ({ ...b, capital: { ...b.capital, accounts: b.capital.accounts.filter(x => x.id !== id) } }));
+  const setAsset = (id, f, v) => write(b => ({ ...b, assets: b.assets.map(x => x.id === id ? { ...x, [f]: v } : x) }));
+  const addAsset = () => write(b => ({ ...b, assets: [...b.assets, { id: uid(), name: "", value: 0 }] }));
+  const removeAsset = (id) => write(b => ({ ...b, assets: b.assets.filter(x => x.id !== id) }));
+
+  return (
+    <div className="zoneview fade-up">
+      <div className="zv-head"><span className="zv-code">💰</span>
+        <span className="zv-name">Budget · live sector</span>
+        <span className="bz-month">cycle {monthKey()}</span></div>
+
+      <div className="bz-hero">
+        <div className="bz-stat big"><div className="bz-val">{fmtMoney(netWorth(budget))}</div><div className="bz-lab">Net Worth · derived</div></div>
+        <div className="bz-stat"><div className="bz-val">{fmtMoney(capitalTotal(budget))}</div><div className="bz-lab">Capital on Hand</div></div>
+        <div className="bz-stat"><div className="bz-val">{fmtMoney(assetsTotal(budget))}</div><div className="bz-lab">Assets</div></div>
+        <div className="bz-stat"><div className="bz-val">{String(flags.length).padStart(2, "0")}</div><div className="bz-lab">Open Flags</div></div>
+      </div>
+
+      {flags.length > 0 && (
+        <div className="bz-flags">
+          {flags.map(f => (
+            <div key={f.id} className={"bz-flag" + (f.severity === "alarm" ? " alarm" : "")}>
+              <span className="bz-flag-tag">kaniel // {f.severity}</span>
+              <span className="bz-flag-msg">{f.message}</span>
+              <button className="bz-flag-x" onClick={() => onDismissFlag(f.id)} aria-label="Dismiss flag">dismiss ✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="bz-grid">
+        <section className="bz-mod">
+          <div className="bz-mod-head"><span>Capital on Hand</span>
+            <span className="bz-tag">live accounts · edit in place</span></div>
+          <BzValueList items={budget.capital.accounts} empty="no accounts" addLabel="+ add account" nameHolder="account"
+            onAdd={addAccount} onSet={setAccount} onRemove={removeAccount} />
+          <div className="bz-row bz-total"><span className="k">total</span><span>{fmtMoney(capitalTotal(budget))}</span></div>
+          <div style={{ marginTop: 10 }}><MonthLog rows={budget.capital.monthlyLog} /></div>
+        </section>
+
+        <section className="bz-mod">
+          <div className="bz-mod-head"><span>Assets</span>
+            <span className="bz-tag">manual · portfolio pull later</span></div>
+          <BzValueList items={budget.assets} empty="no assets logged" addLabel="+ add asset" nameHolder="asset"
+            onAdd={addAsset} onSet={setAsset} onRemove={removeAsset} />
+          <div className="bz-row bz-total"><span className="k">total</span><span>{fmtMoney(assetsTotal(budget))}</span></div>
+        </section>
+
+        <section className="bz-mod">
+          <div className="bz-mod-head"><span>Owe Ledger</span>
+            <span className="bz-tag">i owe / owed to me</span></div>
+          {budget.oweLedger.length === 0
+            ? <div className="bz-empty">ledger clear — nothing open in either direction</div>
+            : budget.oweLedger.map(o => (
+                <div key={o.id} className={"bz-owe" + (isOverdue(o, now) ? " overdue" : "") + (o.status === "paid" ? " paid" : "")}>
+                  <span className="bz-dir">{o.direction === "iowe" ? "i owe" : "owed me"}</span>
+                  <span className="who">{o.person}</span>
+                  <span className="amt">{fmtMoney(o.amount)}</span>
+                  <span className="due">{o.due}</span>
+                </div>
+              ))}
+        </section>
+
+        <section className="bz-mod">
+          <div className="bz-mod-head"><span>Net Worth Log</span>
+            <span className="bz-tag">auto close-out</span></div>
+          <MonthLog rows={budget.netWorthLog} />
+        </section>
+
+        <section className="bz-mod wide">
+          <div className="bz-mod-head"><span>Category Budget</span>
+            <span className="bz-tag">freeform · flags at 75% and 100%</span></div>
+          {budget.categories.length === 0
+            ? <div className="bz-empty">no categories yet</div>
+            : (
+              <div className="bz-cats">
+                {budget.categories.map(c => {
+                  const pct = categoryPct(c), state = categoryState(c);
+                  const lit = Math.min(20, Math.round((pct / 100) * 20));
+                  return (
+                    <div key={c.id} className={"bz-cat " + state}>
+                      <div className="bz-cat-head"><span>{c.name}</span><span className="bz-cat-pct">{Math.round(pct)}%</span></div>
+                      <div className="bz-meter">
+                        {Array.from({ length: 20 }).map((_, i) => <i key={i} className={i < lit ? "on" : ""} />)}
+                      </div>
+                      <div className="bz-cat-sub">{fmtMoney(c.spent)} of {fmtMoney(c.budgeted)} · {fmtMoney(c.budgeted - c.spent)} left</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
 function GridApp({ authSession, onSignOut }) {
   const [screen, setScreen] = useState("lock"); // lock | boot | dashboard | zone | allsectors
   const [sector, setSector] = useState(null);
@@ -3637,6 +3789,9 @@ function GridApp({ authSession, onSignOut }) {
   const homeworkToggleDone = (id) => writeDaily(d => ({
     ...d, homework: d.homework.map(x => (x.id === id ? { ...x, done: !x.done } : x)),
   }));
+
+  // ── budget writer ── (mutators live in store.js or in BudgetScreen itself)
+  const writeBudget = (fn) => setStore(s => saveStore({ ...s, budget: fn(s.budget) }));
 
   // ── contact tracker writers ──
   const writeContactTracker = (fn) => setStore(s => saveStore({ ...s, contactTracker: fn(s.contactTracker) }));
@@ -4182,98 +4337,7 @@ function GridApp({ authSession, onSignOut }) {
         )}
 
         {screen === "budget" && (
-          <div className="zoneview fade-up">
-            <div className="zv-head"><span className="zv-code">💰</span>
-              <span className="zv-name">Budget · live sector</span>
-              <span className="bz-month">cycle {monthKey()}</span></div>
-
-            <div className="bz-hero">
-              <div className="bz-stat big"><div className="bz-val">{fmtMoney(netWorth(budget))}</div><div className="bz-lab">Net Worth · derived</div></div>
-              <div className="bz-stat"><div className="bz-val">{fmtMoney(capitalTotal(budget))}</div><div className="bz-lab">Capital on Hand</div></div>
-              <div className="bz-stat"><div className="bz-val">{fmtMoney(assetsTotal(budget))}</div><div className="bz-lab">Assets</div></div>
-              <div className="bz-stat"><div className="bz-val">{String(budgetFlags.length).padStart(2, "0")}</div><div className="bz-lab">Open Flags</div></div>
-            </div>
-
-            {budgetFlags.length > 0 && (
-              <div className="bz-flags">
-                {budgetFlags.map(f => (
-                  <div key={f.id} className={"bz-flag" + (f.severity === "alarm" ? " alarm" : "")}>
-                    <span className="bz-flag-tag">kaniel // {f.severity}</span>
-                    <span className="bz-flag-msg">{f.message}</span>
-                    <button className="bz-flag-x" onClick={() => onDismissFlag(f.id)} aria-label="Dismiss flag">dismiss ✕</button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="bz-grid">
-              <section className="bz-mod">
-                <div className="bz-mod-head"><span>Capital on Hand</span>
-                  <span className="bz-tag">live accounts</span></div>
-                {budget.capital.accounts.map(a => (
-                  <div key={a.id} className="bz-row"><span className="k">{a.name}</span><span>{fmtMoney(a.value)}</span></div>
-                ))}
-                <div className="bz-row"><span className="k">total</span><span>{fmtMoney(capitalTotal(budget))}</span></div>
-                <div style={{ marginTop: 10 }}><MonthLog rows={budget.capital.monthlyLog} /></div>
-              </section>
-
-              <section className="bz-mod">
-                <div className="bz-mod-head"><span>Assets</span>
-                  <span className="bz-tag">manual · portfolio pull later</span></div>
-                {budget.assets.length === 0
-                  ? <div className="bz-empty">no assets logged</div>
-                  : budget.assets.map(a => (
-                      <div key={a.id} className="bz-row"><span className="k">{a.name}</span><span>{fmtMoney(a.value)}</span></div>
-                    ))}
-                <div className="bz-row"><span className="k">total</span><span>{fmtMoney(assetsTotal(budget))}</span></div>
-              </section>
-
-              <section className="bz-mod">
-                <div className="bz-mod-head"><span>Owe Ledger</span>
-                  <span className="bz-tag">i owe / owed to me</span></div>
-                {budget.oweLedger.length === 0
-                  ? <div className="bz-empty">ledger clear — nothing open in either direction</div>
-                  : budget.oweLedger.map(o => (
-                      <div key={o.id} className={"bz-owe" + (isOverdue(o, now) ? " overdue" : "") + (o.status === "paid" ? " paid" : "")}>
-                        <span className="bz-dir">{o.direction === "iowe" ? "i owe" : "owed me"}</span>
-                        <span className="who">{o.person}</span>
-                        <span className="amt">{fmtMoney(o.amount)}</span>
-                        <span className="due">{o.due}</span>
-                      </div>
-                    ))}
-              </section>
-
-              <section className="bz-mod">
-                <div className="bz-mod-head"><span>Net Worth Log</span>
-                  <span className="bz-tag">auto close-out</span></div>
-                <MonthLog rows={budget.netWorthLog} />
-              </section>
-
-              <section className="bz-mod wide">
-                <div className="bz-mod-head"><span>Category Budget</span>
-                  <span className="bz-tag">freeform · flags at 75% and 100% · quick-tap entry lands later</span></div>
-                {budget.categories.length === 0
-                  ? <div className="bz-empty">awaiting real category names — thresholds go live once they land</div>
-                  : (
-                    <div className="bz-cats">
-                      {budget.categories.map(c => {
-                        const pct = categoryPct(c), state = categoryState(c);
-                        const lit = Math.min(20, Math.round((pct / 100) * 20));
-                        return (
-                          <div key={c.id} className={"bz-cat " + state}>
-                            <div className="bz-cat-head"><span>{c.name}</span><span className="bz-cat-pct">{Math.round(pct)}%</span></div>
-                            <div className="bz-meter">
-                              {Array.from({ length: 20 }).map((_, i) => <i key={i} className={i < lit ? "on" : ""} />)}
-                            </div>
-                            <div className="bz-cat-sub">{fmtMoney(c.spent)} of {fmtMoney(c.budgeted)} · {fmtMoney(c.budgeted - c.spent)} left</div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-              </section>
-            </div>
-          </div>
+          <BudgetScreen budget={budget} now={now} flags={budgetFlags} onDismissFlag={onDismissFlag} write={writeBudget} />
         )}
 
         {screen === "weekly" && (
