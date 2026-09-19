@@ -1,0 +1,11 @@
+node_modules
+dist
+.DS_Store
+
+# private/ holds the source life spreadsheet — structural reference for the
+# sectors, but it has real personal financial/health figures. Never uploaded.
+private/
+*.xlsx
+
+# per-machine Claude Code permission list (contains local file paths)
+.claude/settings.local.json
