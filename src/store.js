@@ -871,6 +871,40 @@ const startOfToday = (now) => new Date(now.getFullYear(), now.getMonth(), now.ge
 export const isOverdue = (o, now = new Date()) =>
   o.status === "open" && !!o.due && new Date(o.due + "T00:00:00") < startOfToday(now);
 
+// ── category spend entry ──
+// `spent` stays a stored field (every tile and flag reads it); quick-tap logging
+// writes the entry AND moves the total in one step, so the two can't drift apart.
+// Undo reverses exactly that entry. `spent` can also be set directly (opening
+// figure for a mid-cycle start, or a correction) — entries then only ever adjust
+// it relatively, which is why undo subtracts rather than recomputes.
+const cents = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const newId = () => globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2, 10);
+
+export function logSpend(b, categoryId, amount, note = "", now = new Date()) {
+  const amt = cents(amount);
+  if (!(amt > 0) || !b.categories.some(c => c.id === categoryId)) return b;
+  return {
+    ...b,
+    categories: b.categories.map(c => c.id === categoryId ? { ...c, spent: cents((Number(c.spent) || 0) + amt) } : c),
+    spendEntries: [...b.spendEntries, { id: newId(), categoryId, amount: amt, note: String(note || "").trim(), at: now.toISOString() }],
+  };
+}
+export function undoSpend(b, entryId) {
+  const e = b.spendEntries.find(x => x.id === entryId);
+  if (!e) return b;
+  return {
+    ...b,
+    categories: b.categories.map(c => c.id === e.categoryId ? { ...c, spent: Math.max(0, cents((Number(c.spent) || 0) - e.amount)) } : c),
+    spendEntries: b.spendEntries.filter(x => x.id !== entryId),
+  };
+}
+export function removeCategory(b, categoryId) {
+  return { ...b, categories: b.categories.filter(c => c.id !== categoryId), spendEntries: b.spendEntries.filter(e => e.categoryId !== categoryId) };
+}
+// this month's entries for a category, newest first — the only ones undo is offered for
+export const monthEntries = (b, categoryId, now = new Date()) =>
+  b.spendEntries.filter(e => e.categoryId === categoryId && monthKey(new Date(e.at)) === monthKey(now)).reverse();
+
 // ── flags ──
 // Derived fresh from data rather than stored, so a flag clears itself once the
 // underlying condition resolves. Ids are stable/content-derived, which is what

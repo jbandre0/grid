@@ -3,6 +3,7 @@ import {
   loadStore, saveStore, touchMonth, monthKey, fmtMoney,
   capitalTotal, assetsTotal, netWorth, logInOut,
   categoryPct, categoryState, isOverdue, activeFlags, dismissFlag,
+  logSpend, undoSpend, removeCategory, monthEntries,
   cycleBurn, iOweOpen, owedToMeOpen, overdueCount, overdueSplit, netWorthSeries, inOutSeries, maskMoney,
   touchWeek, weekNumber, weekKey, goalProgress,
   GLANCE_ROWS, GLANCE_DAYS, glanceDates, ritualDone,
@@ -589,9 +590,28 @@ const CSS = `
 .bz-paid-btn { background: none; border: none; cursor: pointer; color: var(--holo-dim); font-size: 12px; padding: 0; text-align: center; }
 .bz-paid-btn[aria-pressed="true"] { color: var(--holo); text-shadow: 0 0 7px rgba(79,227,255,0.6); }
 .bz-add-pair { display: flex; gap: 16px; }
+.bz-cat-head .bz-in { font-size: 10px; }
+.bz-spend { display: grid; grid-template-columns: 74px minmax(0, 1fr) 30px 20px; gap: 6px; align-items: center; margin-top: 7px; }
+.bz-spend .bz-in.money { text-align: left; }
+.bz-log-btn, .bz-edit-btn { background: none; border: 1px solid var(--panel-line); color: var(--holo-dim); cursor: pointer;
+  font-family: var(--mono); font-size: 8px; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 0; }
+.bz-log-btn:hover:not(:disabled), .bz-edit-btn:hover, .bz-edit-btn.on { border-color: var(--holo); color: var(--holo); }
+.bz-log-btn:disabled { opacity: 0.35; cursor: default; }
+.bz-edit-btn { font-size: 11px; line-height: 1; }
+.bz-cat-edit { margin-top: 8px; padding: 8px 0 2px; border-top: 1px dashed rgba(79,227,255,0.18); display: flex; flex-direction: column; gap: 4px; }
+.bz-cat-edit label { display: grid; grid-template-columns: 1fr 96px; gap: 8px; align-items: center;
+  font-family: var(--mono); font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ghost-dim); }
+.bz-cat-note { font-family: var(--mono); font-size: 7.5px; letter-spacing: 0.06em; color: var(--holo-dim); opacity: 0.75; margin: 2px 0 4px; }
+.bz-entry { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 9.5px; padding: 2px 0; border-bottom: 1px dashed rgba(79,227,255,0.1); }
+.bz-entry .amt { color: var(--holo); }
+.bz-entry .note { flex: 1; color: var(--ghost); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bz-entry .when { font-size: 8px; color: var(--ghost-dim); }
+.bz-del { align-self: flex-start; margin-top: 6px; background: none; border: none; cursor: pointer; padding: 0;
+  font-family: var(--mono); font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--holo-dim); }
+.bz-del:hover { color: var(--alarm); }
 
 /* category budget meters */
-.bz-cats { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px 16px; }
+.bz-cats { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px 16px; }
 .bz-cat-head { display: flex; justify-content: space-between; align-items: baseline; font-family: var(--mono); font-size: 10px; color: var(--ghost); }
 .bz-cat-pct { color: var(--holo); }
 .bz-cat.warn .bz-cat-pct { color: var(--gold); }
@@ -3482,7 +3502,10 @@ function MetricsOutsourcingSector({ store, now, onDismissInsight }) {
 function MoneyInput({ value, onChange, className = "bz-in money", placeholder = "0.00", negative = false }) {
   const [text, setText] = useState(null);
   const raw = value === "" || value == null || Number(value) === 0 ? "" : String(value);
-  const shown = text ?? (raw === "" ? "" : Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  // typed text wins only while it still matches the stored value — if the parent
+  // resets it (e.g. a spend was just logged) the field clears even while focused
+  const typing = text !== null && (parseFloat(text) || 0) === (Number(value) || 0);
+  const shown = typing ? text : (raw === "" ? "" : Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
   const ok = negative ? /^-?\d*\.?\d{0,2}$/ : /^\d*\.?\d{0,2}$/;
   return (
     <input className={className} inputMode="decimal" value={shown} placeholder={placeholder}
@@ -3514,6 +3537,57 @@ function BzValueList({ items, empty, addLabel, nameHolder, onAdd, onSet, onRemov
   );
 }
 
+// One category: live meter + quick-tap spend row, with an edit drawer for the
+// monthly amount, an opening/correction figure, recent entries (undo) and delete.
+function CategoryCard({ c, entries, open, onToggle, onSet, onLog, onUndo, onDelete }) {
+  const [amt, setAmt] = useState(0);
+  const [note, setNote] = useState("");
+  const pct = categoryPct(c), state = categoryState(c);
+  const lit = Math.min(20, Math.round((pct / 100) * 20));
+  const submit = () => { if (!(amt > 0)) return; onLog(amt, note); setAmt(0); setNote(""); };
+  const onEnter = (e) => { if (e.key === "Enter") submit(); };
+  return (
+    <div className={"bz-cat " + state}>
+      <div className="bz-cat-head">
+        <input className="bz-in" value={c.name} placeholder="category name" onChange={e => onSet("name", e.target.value)} />
+        <span className="bz-cat-pct">{Math.round(pct)}%</span>
+      </div>
+      <div className="bz-meter">
+        {Array.from({ length: 20 }).map((_, i) => <i key={i} className={i < lit ? "on" : ""} />)}
+      </div>
+      <div className="bz-cat-sub">
+        {Number(c.budgeted) > 0
+          ? <>{fmtMoney(c.spent)} of {fmtMoney(c.budgeted)} · {fmtMoney(c.budgeted - c.spent)} left</>
+          : <>{fmtMoney(c.spent)} spent · no monthly budget set</>}
+      </div>
+      <div className="bz-spend" onKeyDown={onEnter}>
+        <MoneyInput value={amt} onChange={setAmt} placeholder="spend $" />
+        <input className="bz-in" value={note} placeholder="note" onChange={e => setNote(e.target.value)} />
+        <button className="bz-log-btn" disabled={!(amt > 0)} onClick={submit}>log</button>
+        <button className={"bz-edit-btn" + (open ? " on" : "")} aria-expanded={open} onClick={onToggle} title="edit category">⋯</button>
+      </div>
+      {open && (
+        <div className="bz-cat-edit">
+          <label><span>monthly budget</span><MoneyInput value={c.budgeted} onChange={v => onSet("budgeted", v)} /></label>
+          <label><span>spent so far</span><MoneyInput value={c.spent} onChange={v => onSet("spent", v)} /></label>
+          <div className="bz-cat-note">logging adds to spent so far · editing it directly sets an opening figure or corrects a slip</div>
+          {entries.length === 0
+            ? <div className="bz-empty">no entries logged this month</div>
+            : entries.slice(0, 6).map(e => (
+                <div key={e.id} className="bz-entry">
+                  <span className="amt">{fmtMoney(e.amount)}</span>
+                  <span className="note">{e.note || "—"}</span>
+                  <span className="when">{e.at.slice(5, 10)}</span>
+                  <button className="do-x" onClick={() => onUndo(e.id)} aria-label="Undo entry" title="undo this entry">✕</button>
+                </div>
+              ))}
+          <button className="bz-del" onClick={onDelete}>delete category</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // `write(fn)` runs fn on the budget slice and saves it — the same shape every
 // other sector's writers use. Derived figures (net worth, flags, tiles) all
 // recompute from the slice, so entry here flows straight to the dashboard.
@@ -3528,6 +3602,14 @@ function BudgetScreen({ budget, now, flags, onDismissFlag, write }) {
   const setOwe = (id, f, v) => write(b => ({ ...b, oweLedger: b.oweLedger.map(x => x.id === id ? { ...x, [f]: v } : x) }));
   const removeOwe = (id) => write(b => ({ ...b, oweLedger: b.oweLedger.filter(x => x.id !== id) }));
   // display-only order: open before paid, then soonest due first (undated last)
+  const [editCat, setEditCat] = useState(null);
+  const addCategory = () => { const id = uid(); write(b => ({ ...b, categories: [...b.categories, { id, name: "", budgeted: 0, spent: 0 }] })); setEditCat(id); };
+  const setCategory = (id, f, v) => write(b => ({ ...b, categories: b.categories.map(x => x.id === id ? { ...x, [f]: v } : x) }));
+  const deleteCategory = (c) => {
+    if (!window.confirm(`Delete "${c.name || "this category"}" and its logged entries? This can't be undone.`)) return;
+    write(b => removeCategory(b, c.id));
+    setEditCat(null);
+  };
   const oweRows = [...budget.oweLedger].sort((a, b) =>
     (a.status === "paid") - (b.status === "paid") || (a.due || "9999").localeCompare(b.due || "9999"));
 
@@ -3616,26 +3698,19 @@ function BudgetScreen({ budget, now, flags, onDismissFlag, write }) {
 
         <section className="bz-mod wide">
           <div className="bz-mod-head"><span>Category Budget</span>
-            <span className="bz-tag">freeform · flags at 75% and 100%</span></div>
-          {budget.categories.length === 0
-            ? <div className="bz-empty">no categories yet</div>
-            : (
-              <div className="bz-cats">
-                {budget.categories.map(c => {
-                  const pct = categoryPct(c), state = categoryState(c);
-                  const lit = Math.min(20, Math.round((pct / 100) * 20));
-                  return (
-                    <div key={c.id} className={"bz-cat " + state}>
-                      <div className="bz-cat-head"><span>{c.name}</span><span className="bz-cat-pct">{Math.round(pct)}%</span></div>
-                      <div className="bz-meter">
-                        {Array.from({ length: 20 }).map((_, i) => <i key={i} className={i < lit ? "on" : ""} />)}
-                      </div>
-                      <div className="bz-cat-sub">{fmtMoney(c.spent)} of {fmtMoney(c.budgeted)} · {fmtMoney(c.budgeted - c.spent)} left</div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+            <span className="bz-tag">flags at 75% and 100% · type an amount, press enter to log</span></div>
+          {budget.categories.length === 0 && <div className="bz-empty">no categories yet</div>}
+          <div className="bz-cats">
+            {budget.categories.map(c => (
+              <CategoryCard key={c.id} c={c} entries={monthEntries(budget, c.id, now)} open={editCat === c.id}
+                onToggle={() => setEditCat(editCat === c.id ? null : c.id)}
+                onSet={(f, v) => setCategory(c.id, f, v)}
+                onLog={(amount, note) => write(b => logSpend(b, c.id, amount, note))}
+                onUndo={(entryId) => write(b => undoSpend(b, entryId))}
+                onDelete={() => deleteCategory(c)} />
+            ))}
+          </div>
+          <button className="do-add" onClick={addCategory}>+ add category</button>
         </section>
       </div>
     </div>
