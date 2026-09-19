@@ -3,7 +3,7 @@ import {
   loadStore, saveStore, touchMonth, monthKey, fmtMoney,
   capitalTotal, assetsTotal, netWorth, logInOut,
   categoryPct, categoryState, isOverdue, activeFlags, dismissFlag,
-  cycleBurn, overdueCount, overdueSplit, netWorthSeries, inOutSeries, maskMoney,
+  cycleBurn, iOweOpen, owedToMeOpen, overdueCount, overdueSplit, netWorthSeries, inOutSeries, maskMoney,
   touchWeek, weekNumber, weekKey, goalProgress,
   GLANCE_ROWS, GLANCE_DAYS, glanceDates, ritualDone,
   METRICS, METRIC_GROUPS, METRICS_DAYS, metricsDates,
@@ -574,6 +574,21 @@ const CSS = `
 .bz-in:hover { border-bottom-color: rgba(79,227,255,0.22); }
 .bz-in:focus { border-bottom-color: var(--holo); }
 .bz-total { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--panel-line); }
+.bz-mod.tall { grid-row: span 2; }
+@media (max-width: 900px) { .bz-mod.tall { grid-row: auto; } }
+.bz-owe-table { overflow-x: auto; }
+.bz-owe-row { display: grid; grid-template-columns: 70px minmax(90px, 1fr) 100px minmax(110px, 1.4fr) 112px 40px 18px;
+  gap: 8px; align-items: center; padding: 3px 0; border-bottom: 1px dashed rgba(79,227,255,0.1); min-width: 680px; }
+.bz-owe-head { font-family: var(--mono); font-size: 8px; letter-spacing: 0.08em; color: var(--holo-dim);
+  text-transform: uppercase; border-bottom: 1px solid var(--panel-line); padding-bottom: 4px; }
+.bz-dir-btn { background: none; cursor: pointer; font-family: var(--mono); text-align: center; }
+.bz-dir-btn:hover { border-color: var(--holo); color: var(--holo); }
+.bz-owe-row .bz-in.money { text-align: left; }
+.bz-owe-row.overdue .bz-in.money, .bz-in.late { color: var(--alarm); }
+.bz-owe-row.paid { opacity: 0.45; }
+.bz-paid-btn { background: none; border: none; cursor: pointer; color: var(--holo-dim); font-size: 12px; padding: 0; text-align: center; }
+.bz-paid-btn[aria-pressed="true"] { color: var(--holo); text-shadow: 0 0 7px rgba(79,227,255,0.6); }
+.bz-add-pair { display: flex; gap: 16px; }
 
 /* category budget meters */
 .bz-cats { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px 16px; }
@@ -3463,14 +3478,15 @@ function MetricsOutsourcingSector({ store, now, onDismissInsight }) {
 // ── BUDGET SECTOR ──
 // Money field that keeps its own text while focused, so typing "12." or "-" isn't
 // eaten by a number round-trip. Commits a parsed number on every valid keystroke
-// (empty → 0) and re-formats from the stored value on blur.
+// (empty → 0) and shows the formatted figure (1,234.50) when not focused.
 function MoneyInput({ value, onChange, className = "bz-in money", placeholder = "0.00", negative = false }) {
   const [text, setText] = useState(null);
-  const shown = text ?? (value === "" || value == null || Number(value) === 0 ? "" : String(value));
+  const raw = value === "" || value == null || Number(value) === 0 ? "" : String(value);
+  const shown = text ?? (raw === "" ? "" : Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
   const ok = negative ? /^-?\d*\.?\d{0,2}$/ : /^\d*\.?\d{0,2}$/;
   return (
     <input className={className} inputMode="decimal" value={shown} placeholder={placeholder}
-      onFocus={() => setText(shown)} onBlur={() => setText(null)}
+      onFocus={() => setText(raw)} onBlur={() => setText(null)}
       onChange={e => {
         const t = e.target.value;
         if (!ok.test(t)) return;
@@ -3508,6 +3524,12 @@ function BudgetScreen({ budget, now, flags, onDismissFlag, write }) {
   const setAsset = (id, f, v) => write(b => ({ ...b, assets: b.assets.map(x => x.id === id ? { ...x, [f]: v } : x) }));
   const addAsset = () => write(b => ({ ...b, assets: [...b.assets, { id: uid(), name: "", value: 0 }] }));
   const removeAsset = (id) => write(b => ({ ...b, assets: b.assets.filter(x => x.id !== id) }));
+  const addOwe = (direction) => write(b => ({ ...b, oweLedger: [...b.oweLedger, { id: uid(), direction, person: "", amount: 0, reason: "", due: "", status: "open" }] }));
+  const setOwe = (id, f, v) => write(b => ({ ...b, oweLedger: b.oweLedger.map(x => x.id === id ? { ...x, [f]: v } : x) }));
+  const removeOwe = (id) => write(b => ({ ...b, oweLedger: b.oweLedger.filter(x => x.id !== id) }));
+  // display-only order: open before paid, then soonest due first (undated last)
+  const oweRows = [...budget.oweLedger].sort((a, b) =>
+    (a.status === "paid") - (b.status === "paid") || (a.due || "9999").localeCompare(b.due || "9999"));
 
   return (
     <div className="zoneview fade-up">
@@ -3535,7 +3557,7 @@ function BudgetScreen({ budget, now, flags, onDismissFlag, write }) {
       )}
 
       <div className="bz-grid">
-        <section className="bz-mod">
+        <section className="bz-mod tall">
           <div className="bz-mod-head"><span>Capital on Hand</span>
             <span className="bz-tag">live accounts · edit in place</span></div>
           <BzValueList items={budget.capital.accounts} empty="no accounts" addLabel="+ add account" nameHolder="account"
@@ -3553,24 +3575,43 @@ function BudgetScreen({ budget, now, flags, onDismissFlag, write }) {
         </section>
 
         <section className="bz-mod">
-          <div className="bz-mod-head"><span>Owe Ledger</span>
-            <span className="bz-tag">i owe / owed to me</span></div>
-          {budget.oweLedger.length === 0
-            ? <div className="bz-empty">ledger clear — nothing open in either direction</div>
-            : budget.oweLedger.map(o => (
-                <div key={o.id} className={"bz-owe" + (isOverdue(o, now) ? " overdue" : "") + (o.status === "paid" ? " paid" : "")}>
-                  <span className="bz-dir">{o.direction === "iowe" ? "i owe" : "owed me"}</span>
-                  <span className="who">{o.person}</span>
-                  <span className="amt">{fmtMoney(o.amount)}</span>
-                  <span className="due">{o.due}</span>
-                </div>
-              ))}
-        </section>
-
-        <section className="bz-mod">
           <div className="bz-mod-head"><span>Net Worth Log</span>
             <span className="bz-tag">auto close-out</span></div>
           <MonthLog rows={budget.netWorthLog} />
+        </section>
+
+        <section className="bz-mod wide">
+          <div className="bz-mod-head"><span>Owe Ledger</span>
+            <span className="bz-tag">i owe {fmtMoney(iOweOpen(budget))} · owed to me {fmtMoney(owedToMeOpen(budget))} · open only · paid entries leave net worth — update Capital yourself</span></div>
+          {oweRows.length > 0 && (
+            <div className="bz-owe-table">
+              <div className="bz-owe-row bz-owe-head">
+                <span>Direction</span><span>Person</span><span>Amount</span><span>Reason</span><span>Due</span><span>Paid</span><span />
+              </div>
+              {oweRows.map(o => {
+                const late = isOverdue(o, now);
+                return (
+                  <div key={o.id} className={"bz-owe-row" + (late ? " overdue" : "") + (o.status === "paid" ? " paid" : "")}>
+                    <button className="bz-dir bz-dir-btn" title="flip direction"
+                      onClick={() => setOwe(o.id, "direction", o.direction === "iowe" ? "owedme" : "iowe")}>
+                      {o.direction === "iowe" ? "i owe" : "owed me"}</button>
+                    <input className="bz-in" value={o.person} placeholder="person" onChange={e => setOwe(o.id, "person", e.target.value)} />
+                    <MoneyInput value={o.amount} onChange={v => setOwe(o.id, "amount", v)} />
+                    <input className="bz-in" value={o.reason} placeholder="reason" onChange={e => setOwe(o.id, "reason", e.target.value)} />
+                    <input className={"bz-in bz-due" + (late ? " late" : "")} type="date" value={o.due} onChange={e => setOwe(o.id, "due", e.target.value)} />
+                    <button className="bz-paid-btn" aria-pressed={o.status === "paid"} title="mark paid / reopen"
+                      onClick={() => setOwe(o.id, "status", o.status === "paid" ? "open" : "paid")}>{o.status === "paid" ? "◼" : "◻"}</button>
+                    <button className="do-x" onClick={() => removeOwe(o.id)} aria-label="Remove entry">✕</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {oweRows.length === 0 && <div className="bz-empty">ledger clear — nothing open in either direction</div>}
+          <div className="bz-add-pair">
+            <button className="do-add" onClick={() => addOwe("iowe")}>+ i owe</button>
+            <button className="do-add" onClick={() => addOwe("owedme")}>+ owed to me</button>
+          </div>
         </section>
 
         <section className="bz-mod wide">
