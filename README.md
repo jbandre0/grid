@@ -6,7 +6,7 @@ Personal life-OS dashboard (Vite + React). Run it: `npm install && npm run dev`.
 
 | Path | What it is | Uploaded to GitHub? |
 |---|---|---|
-| `src/` | The app: `App.jsx` (UI + CSS), `store.js` (data layer), `mockSeed.js` | yes |
+| `src/` | The app: `App.jsx` (UI + CSS), `store.js` (data layer) | yes |
 | `docs/specs/` | One spec per sector (what it is, settled decisions, build order) | yes |
 | `reference/` | Aesthetic reference screenshots | yes |
 | `CLAUDE.md` | Standing instructions for Claude Code (must stay at the root) | yes |

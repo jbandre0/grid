@@ -1,9 +1,9 @@
 # THE GRID — Build State
 
 Runnable Vite + React project (`npm install && npm run dev`; `npm run test:sync` runs the
-sync-engine tests). Layout: `src/App.jsx` (all UI + inline CSS), `src/store.js`
-(persistence + derivations), `src/syncEngine.js` + `src/cloud.js` + `src/supabase.js`
-(cloud sync), `src/mockSeed.js` (Budget placeholder data only), `src/_retiredTiles.js`
+sync-engine tests, `npm run test:budget` the Budget logic tests). Layout: `src/App.jsx` (all
+UI + inline CSS), `src/store.js` (persistence + derivations + Budget mutators),
+`src/syncEngine.js` + `src/cloud.js` + `src/supabase.js` (cloud sync), `src/_retiredTiles.js`
 (dead reference, imported nowhere). Specs live in `docs/specs/`, the Supabase schema in
 `docs/supabase/schema.sql`, tests in `tests/`, and `README.md` has a folder map.
 `private/` is **gitignored on purpose** and holds the source spreadsheet
@@ -11,9 +11,9 @@ sync-engine tests). Layout: `src/App.jsx` (all UI + inline CSS), `src/store.js`
 (`the-grid-import-real-data.json`), and a bundle of the pre-reset git history — none of it
 may ever be committed.
 
-**Five sectors are live**, all with real persistence: Budget (read-only — see open items),
-Weekly Overview, Weekly Metrics Outsourcing, Daily Overview, Contact Tracker. Only Budget
-ships with placeholder data; everything else starts blank and is meant for real entry.
+**Five sectors are live**, all with real persistence and real entry: Budget, Weekly Overview,
+Weekly Metrics Outsourcing, Daily Overview, Contact Tracker. Nothing ships with placeholder
+data any more — every sector starts blank.
 The dashboard was deliberately stripped back to tiles backed by real data, because
 invented tile structure was making it impossible to design against — remaining sectors
 get built structure-first rather than mocked-up first.
@@ -119,13 +119,15 @@ user's Gmail as author; they explicitly said that's fine.
     this browser looks *empty* while the cloud has data (cleared/corrupt storage — the
     "blank overwrites real" guard); or the cloud is older than last sync. A browser with no
     user data just adopts the cloud copy. `hasUserData()` (`store.js`) decides "real data" —
-    Budget's mock placeholder deliberately doesn't count.
+    Budget's default Cash/Bank accounts at $0 deliberately don't count.
   - Topbar chip: synced / unsaved / saving / offline / error / choose copy (gold for
     caution, red only for error). Sign-out warns if anything hasn't reached the cloud.
   - **Verified:** engine tests; a browser run through the real Supabase client against a
     stubbed PostgREST; real-server rejection of a fake token; RLS blocks the anon key on
-    both tables. **NOT verified:** an authenticated round trip against the real project —
-    the author never had the user's password. First real login is the true end-to-end test.
+    both tables. **Real login confirmed working by the
+    user** (2026-09-19). **Signups confirmed disabled** (`disable_signup: true` read from the
+    project's public auth settings; email is the only provider, anonymous users off). Still no
+    *automated* test of a live authenticated push/pull round trip.
   - No cross-device push/notify: other devices only pull on load, focus, and reconnect.
 - **Weekly Overview sector** (`screen === "weekly"`, pinned, glyph **▦**)
   — feature-complete against **`docs/specs/WEEKLY_OVERVIEW_SPEC.md`**: `weekly` store slice + week
@@ -212,20 +214,47 @@ user's Gmail as author; they explicitly said that's fine.
     not a historical per-week one — `closeWeek()` never captured the goal at the time.
   - Math lives in `store.js` as pure functions; clock metrics pivot around noon before
     *any* numeric use.
-- **Budget sector** (`screen === "budget"`, pinned) — five modules reading the real store:
-  Capital on Hand, Assets, Owe Ledger, Net Worth Log, Category Budget. Net Worth is derived
+- **Budget sector** (`screen === "budget"`, pinned) — **starts blank and is fully editable**.
+  `BudgetScreen` (App.jsx) + pure mutators in `store.js`; Budget logic is covered by
+  `npm run test:budget` (15 cases). Net Worth stays derived
   (`capital + assets + receivables − payables`; receivables count before collection —
-  flagged assumption). **Read-only: no UI writes to the budget slice at all**, so the
-  placeholder figures cannot be replaced yet (open item 2).
+  flagged assumption). Modules:
+  - **Capital on Hand / Assets** — inline edit of name + value, add/remove rows (negative
+    values allowed for overdrafts). `MoneyInput` keeps its own text while focused (so "12."
+    survives), shows `1,234.50` when blurred, and clears if the parent resets it.
+  - **Owe Ledger** — full-width table: flip direction, person, amount, reason, due date,
+    paid toggle, delete; `+ i owe` / `+ owed to me` add rows. Display-sorted open-before-paid,
+    soonest due first. Marking paid removes the entry from net worth but does **not** touch
+    Capital — the user updates Capital themselves (stated in the module tag).
+  - **Category Budget** — add/rename categories, monthly budget, and **quick-tap spend**: type
+    an amount (+ optional note), Enter or `log`. **`spent` stays a stored field** (every tile
+    and flag reads it); `logSpend`/`undoSpend` write the `spendEntries` record and move the
+    total together, and undo subtracts (never recomputes) so a hand-set "spent so far"
+    (opening figure for a mid-cycle start, or a correction) stays valid. The `⋯` drawer shows
+    this month's entries with undo, plus delete-category (confirms; also drops that
+    category's entries).
+  - **Month close-out** — on the first login after a month ends, a **confirm dialog**
+    (`CloseOutDialog`) shows the Capital / Net Worth snapshot (start → end, In/Out) and what
+    resets. It never runs on its own. It snapshots figures *as they stand right now* (hence an
+    "update your balances first" nudge), sets each category's `spent` to 0 (budgets carry
+    over; entries are kept as history), logs one row per month (start = previous row's end;
+    the **first** close-out lets the user type the opening start figures), and records
+    `lastCloseOut`, which drives a gold, dismissible **recap flag** for the rest of that month.
+    "Later" hides the dialog for the session; a `month-end · review ›` banner stays in Budget.
+    The dialog is held back until sync's first check finishes and while a sync conflict is
+    open, so a stale browser can't close out before seeing the cloud copy. If several months
+    pass unopened, only the last-tracked month gets a row (nothing invented for the gap).
+    `touchMonth` no longer advances `lastSeenMonth` — only a confirmed close-out does.
   - **Flag engine** — overdue ledger entries fire red `alarm`; categories past 75% fire
-    gold `attentive`; past 100% fire red. Dismissible, dismissals logged. Gold vs red is
-    load-bearing: gold = caution, red = genuine alarm only.
-  - **Placeholder data** (`mockSeed.js`, the only seed left) — every record carries
-    `mock: true`. Seeds edge cases on purpose: two overdue entries (one per direction), a
-    negative In/Out month in both logs, a past-due-but-Paid row that must *not* flag,
-    categories at 95% / 83% (caution) and 140% (alarm). Category **names are real**
-    (user-supplied); amounts are fake; Owe Ledger people are generic "Person A/B/C". Re-seeds
-    on a version bump but **bails the moment any record loses `mock: true`**.
+    gold `attentive`; past 100% fire red; plus the month recap. Dismissible, dismissals
+    logged. Gold vs red is load-bearing: gold = caution, red = genuine alarm only.
+  - **Placeholder data is retired.** The old `mock: true` seed (`mockSeed.js`) was deleted;
+    `mergeDefaults` strips any leftover `mock: true` Budget records once on load (local
+    storage, cloud pulls and old backup imports all go through it) and restores Cash/Bank at
+    $0. Untagged records are never touched.
+  - Empty-data hardening: `Sparkline` draws a dashed baseline for <2 points, `InOutChart`
+    shows "no months closed yet". Not built: editing/backfilling past log rows by hand
+    (history only grows through close-out).
 - **Dashboard tile field** — every tile is backed by a real store (the ~26 original
   placeholder tiles were removed; archived in `_retiredTiles.js`). Now spans three sectors:
   - Budget: **Net Worth** (masked money, sparkline, the one vein line to Kaniel), **Budget
@@ -244,7 +273,10 @@ user's Gmail as author; they explicitly said that's fine.
     these tiles use click to open their modal.
 - **Budget Health dock panel** — real cycle-burn gauge plus a condensed meter per category.
 - **Scroll.** `.stage` is the scroll container (thin cyan scrollbar); `.grid-root` stays a
-  fixed viewport frame so the starfield/veil/scan/vignette/corner layers stay pinned.
+  fixed viewport frame so the starfield/veil/scan/vignette/corner layers stay pinned. The
+  **topbar is sticky** (back / export / import / sync / sign-out always reachable):
+  `top: -14px` + `margin-top: -14px` cancel the stage's 14px top padding — sticky measures
+  from the padding edge, so `top: 0` left a 14px strip where content showed through.
 - **Vein lines** — SVG threads from a tile to Kaniel's core, measured via
   `getBoundingClientRect` + `ResizeObserver`. Currently one (Net Worth).
 - **Ambient greeble**, **World map** (fully mock, ~800 points, explicitly kept), **bottom
@@ -256,56 +288,54 @@ user's Gmail as author; they explicitly said that's fine.
 
 ## Known open items (rough priority)
 
-**Which sector to work on next is an open question, per CLAUDE.md — don't assume.** The
-user said Budget entry is next ("we'll do budget later"), but confirm.
+**Which sector to work on next is an open question, per CLAUDE.md — don't assume.**
 
-1. **Budget entry UI — none exists.** Capital on Hand editing, Owe Ledger entry, Category
-   Budget quick-tap, real auto month-close-out (snapshot logs, reset category budgets, emit
-   the recap flag). The fake Budget figures on the dashboard can't be replaced until this
-   exists. Offered, **never answered:** make Budget start blank first (needs checking that
-   tiles like `Sparkline` survive empty data — `Math.max(...[])` is a known hazard).
-2. **First real authenticated sync test.** See the sync entry: never run against the real
-   project. The user was offered a throwaway test user for this; not answered.
-3. **Confirm Supabase signups are disabled** (site is public). Asked, not confirmed.
-4. **Contact Tracker increments 3–4** — overdue sorting/alarm styling, then wire Daily
+1. **Budget follow-ups (small).** No UI to backfill/edit past Capital / Net Worth log rows
+   (history before the first close-out can't be entered, so the Net Worth sparkline and In/Out
+   chart stay sparse until months accumulate); no category-level history view;
+   natural-language spend entry still deferred (a cloud LLM would need explicit sign-off
+   before financial text leaves the device).
+2. **Automated authenticated sync test** — real login works (user-confirmed), but nothing
+   automated covers a live push/pull round trip. A throwaway test user was offered; unanswered.
+3. **Contact Tracker increments 3–4** — overdue sorting/alarm styling, then wire Daily
    Overview's People stub. Then Scheduled Calls and a tile if wanted.
-5. **Two bugs found, not fixed** (both were filed as background-task chips; no commit
-   resulted): (a) Weekly Overview shows as "not yet built" in the All Sectors grid — its
-   sheet-name emoji carries a trailing U+FE0F that `EMOJI_RE` doesn't strip, so the
-   `label === "Weekly Overview"` match fails (also makes the live-sector count read one
-   low); fix = strip variation selectors. (b) **Enter-to-add-row in list modules
-   concatenates into the current row** instead of creating one (`WeeklyList` and the copied
-   `DailyRankedList`/`DailyTaskList`); the "+ add line" button works. Root cause unconfirmed.
-6. **Dock panels are still 8/10 fake structure.** Only Budget Health and Life Sectors read
+4. **Former "two bugs" — resolved.** (a) Weekly Overview showing as "not yet built" was a
+   trailing U+FE0F on the sheet emoji; fixed by stripping variation selectors/joiners in
+   `ALL_SECTORS` (live count is now 6/35). (b) "Enter-to-add-row concatenates" is **not an
+   app bug**: the browser-pane harness's `key: "Return"` delivers a keydown with an empty
+   `e.key`, so the `e.key === "Enter"` handler correctly ignores it; `key: "Enter"` (and a
+   real keyboard) creates the row and moves focus. Confirmed on `WeeklyList`; the Daily
+   lists share the handler shape but weren't separately re-run.
+5. **Dock panels are still 8/10 fake structure.** Only Budget Health and Life Sectors read
    real data; Sector Feed, Recent Adds, Velocity, Load, Stalest, Streaks, Uplink and
    Diagnostics are invented. Offered to strip them — **never answered.**
-7. **Budget Health panel overflows** (281px of content in a 166px panel). Suggested an
+6. **Budget Health panel overflows** (281px of content in a 166px panel). Suggested an
    exceptions-only list — **never answered.**
-8. **Topbar scrolls away** now that `.stage` scrolls, taking the back button with it — and
-   it now also carries export/import/sync/sign-out. Offered sticky — **never answered.**
-9. **Kaniel: no real intelligence anywhere.** The command bar, the insight badge, and the
+7. **Kaniel: no real intelligence anywhere.** The command bar, the insight badge, and the
    insight card are stubs/hardcoded ("Website redesign" doesn't exist in any data model). The
    user wants, eventually, to talk to Kaniel from their phone, have it update entries, call,
    or send notifications. That needs a real backend (Supabase functions + a push/SMS
    provider) — a genuine architecture decision, not a follow-on; Supabase is the foundation.
    Natural-language spend entry also deferred (cloud LLM would need explicit sign-off
    before financial text leaves the device).
-10. **Wire cross-sector links as targets appear:** Today's Goals ← Life Goals; Reflection
+8. **Wire cross-sector links as targets appear:** Today's Goals ← Life Goals; Reflection
     buttons → Learning Matrix / Spirituality; People ← Contact Tracker.
-11. **Labels are still plain/corporate** across sectors; project direction wants cryptic
+9. **Labels are still plain/corporate** across sectors; project direction wants cryptic
     personal lingo. Decided to do it per sector as each is built — no sector has done the
     pass yet.
-12. **Mobile needs its own design pass**, not a shrunk desktop copy. Newer pieces (Daily
+10. **Mobile needs its own design pass**, not a shrunk desktop copy. Newer pieces (Daily
     Overview, Contact Tracker's 10-column table, the login screen, sync dialog, new tiles)
-    were never checked at narrow width beyond incidental views.
-13. **Masked figures can't be revealed on touch** (hover-only); **near-zero bars in the
+    were never checked at narrow width beyond incidental views. Budget was checked at 375px
+    and fits (its wide Owe Ledger table scrolls inside its own box); the sticky topbar takes
+    ~97px there.
+11. **Masked figures can't be revealed on touch** (hover-only); **near-zero bars in the
     In/Out chart are nearly invisible** (JUL `+$5.30` on a ±600 scale — left truthful);
     **top ornament** (arc of dots between two "eye" shapes) built once, dropped, never
     re-added.
-14. **Project Tracker has no data model at all** — no records, no Zone L/S/1/Shelf
+12. **Project Tracker has no data model at all** — no records, no Zone L/S/1/Shelf
     structures, no Active/Standby/Dormant/Archived state machine. The zone screen is an
     empty-state placeholder. User deferred it.
-15. **Global notification bus** — Budget's flags are bus-compatible, but the bus itself
+13. **Global notification bus** — Budget's flags are bus-compatible, but the bus itself
     (and cross-sector flags) needs its own outline-and-approval pass. Remaining life
     sectors (Life Goals, Learning Matrix, Spirituality, Health, Habits…) don't exist.
 
@@ -331,6 +361,12 @@ Practical notes (things that cost time before):
 - App state is in React memory: editing `localStorage` directly needs a reload to show.
   `loadStore` merges defaults in memory but only *saves* on a real write, so a slice can be
   absent from localStorage until something writes.
+- In the browser pane, `computer type` works into a focused field but `key: "Return"` sends an
+  empty `e.key` — use `key: "Enter"`. For React inputs, `form_input` or a native-setter +
+  `input` event is the reliable route; afterwards the field still counts as focused, so
+  blur-only formatting won't show. To test month close-out, set `budget.lastSeenMonth` to an
+  earlier month in `grid.store.v1` and reload (a fake session leaves sync in "error", which
+  is enough for the dialog to appear).
 - Verify numbers against the store (`localStorage["grid.store.v1"]`), not rendered text.
   `read_page` accessibility snapshots can be stale after typing; prefer JS reads.
 - Real-Supabase probes that need no login are safe (anon key); never ask for or paste the
