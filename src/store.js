@@ -212,6 +212,46 @@ function mergeDefaults(parsed) {
   };
 }
 
+// exported so sync can normalise a cloud copy exactly like a local load does
+export const normalizeStore = (obj) => mergeDefaults(obj || {});
+
+// ── "does this store hold anything the user actually entered?" ──
+// Sync's safety rules hinge on this: a store that is only defaults + Budget's
+// mock placeholder is NOT user data, so an empty/fresh browser can adopt the
+// cloud copy without asking, and can never silently overwrite a cloud copy that
+// has real entries. Budget only counts records that lost their `mock: true` tag.
+export function hasUserData(s) {
+  if (!s || typeof s !== "object") return false;
+  const filled = (v) => typeof v === "string" ? v.trim() !== "" : v != null;
+  const anyFilled = (arr) => Array.isArray(arr) && arr.some(x => (typeof x === "object" && x ? (x.text ?? x.name ?? "") !== "" || Object.keys(x).length > 2 : filled(x)));
+  const w = s.weekly || {}, d = s.daily || {}, c = s.contactTracker || {}, mo = s.metricsOutsourcing || {}, b = s.budget || {};
+  if (filled(w.theme) || anyFilled(w.priorities) || (w.tasks || []).length || (w.goals || []).length) return true;
+  if (filled(w.stopStart?.stop) || filled(w.stopStart?.start)) return true;
+  if (Object.keys(w.ritualChecked || {}).length || Object.keys(w.metrics || {}).length) return true;
+  if (Object.values(w.metricsGoals || {}).some(v => v != null)) return true;
+  for (const row of Object.values(w.glance || {})) for (const cell of Object.values(row || {})) if ((cell || []).length) return true;
+  if (filled(d.theme) || filled(d.goal1pct)) return true;
+  if ((d.priorities || []).length || (d.tasks || []).length || (d.goals || []).length || (d.people || []).length || (d.homework || []).length) return true;
+  if (Object.values(d.reflection || {}).some(filled)) return true;
+  if ((c.contacts || []).length) return true;
+  if ((mo.rows || []).length) return true;
+  const recs = [...(b.capital?.accounts || []), ...(b.capital?.monthlyLog || []), ...(b.assets || []), ...(b.oweLedger || []),
+    ...(b.categories || []), ...(b.spendEntries || []), ...(b.netWorthLog || [])];
+  if (recs.some(r => r && !r.mock && !(r.id && (r.id === "cash" || r.id === "bank") && !Number(r.value)))) return true;
+  return false;
+}
+
+// one-line human summary for the sync conflict dialog
+export function summarizeStore(s) {
+  const w = s?.weekly || {}, d = s?.daily || {};
+  return {
+    contacts: s?.contactTracker?.contacts?.length || 0,
+    weeklyItems: (w.tasks?.length || 0) + (w.goals?.length || 0),
+    dailyItems: (d.tasks?.length || 0) + (d.priorities?.length || 0) + (d.goals?.length || 0) + (d.homework?.length || 0),
+    archivedWeeks: s?.metricsOutsourcing?.rows?.length || 0,
+  };
+}
+
 export function loadStore() {
   try {
     const raw = localStorage.getItem(KEY);

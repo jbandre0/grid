@@ -18,10 +18,12 @@ import {
   allOutliers, allCorrelations, allLaggedCorrelations, dismissInsight,
   touchDay, dayKey, dayOfYear, homeworkDueToday, homeworkOverdueCount,
   CONTACT_FREQUENCIES, contactNextDate, contactOverdue, contactDueToday,
-  exportBackup, parseBackup,
+  exportBackup, parseBackup, normalizeStore, summarizeStore,
 } from "./store.js";
 import { seedMockBudget } from "./mockSeed.js";
 import { supabase } from "./supabase.js";
+import { cloud } from "./cloud.js";
+import { createSyncEngine } from "./syncEngine.js";
 import { createPortal } from "react-dom";
 
 // ─────────────────────────────────────────────────────────────
@@ -122,6 +124,25 @@ const CSS = `
   cursor: pointer; transition: all 0.2s ease; opacity: 0.4; pointer-events: none; }
 .enter-grid.ready { opacity: 1; pointer-events: auto; }
 .enter-grid.ready:hover { background: var(--holo); color: var(--void); box-shadow: 0 0 28px rgba(79,227,255,0.6); }
+.tb-sync { background: none; border: 1px solid var(--panel-line); color: var(--holo-dim); cursor: pointer; font-family: var(--mono);
+  font-size: 9px; letter-spacing: 0.1em; padding: 5px 9px; text-transform: uppercase; white-space: nowrap; }
+.tb-sync:hover { color: var(--holo); }
+.tb-sync.synced { color: var(--holo-dim); }
+.tb-sync.pending, .tb-sync.saving, .tb-sync.checking, .tb-sync.offline, .tb-sync.conflict { color: var(--gold); border-color: rgba(255,200,87,0.35); }
+.tb-sync.error { color: var(--alarm); border-color: var(--alarm-dim); }
+.sync-dialog { width: min(520px, 92vw); }
+.sd-why { font-family: var(--mono); font-size: 10.5px; line-height: 1.6; color: var(--ghost); margin-bottom: 12px; }
+.sd-cols { display: flex; gap: 10px; margin-bottom: 14px; }
+.sd-col { flex: 1; display: flex; flex-direction: column; gap: 3px; padding: 9px 10px; border: 1px solid var(--panel-line); font-family: var(--mono); font-size: 9.5px; color: var(--ghost-dim); }
+.sd-col b { color: var(--holo); font-weight: 400; letter-spacing: 0.12em; text-transform: uppercase; font-size: 9px; }
+.sd-col i { font-style: normal; color: var(--holo-dim); }
+.sd-dl { align-self: flex-start; margin-top: 4px; background: none; border: none; padding: 0; cursor: pointer; color: var(--holo-dim); font-family: var(--mono); font-size: 9px; text-decoration: underline; }
+.sd-dl:hover { color: var(--holo); }
+.sd-actions { display: flex; gap: 10px; }
+.sd-btn { flex: 1; background: none; border: 1px solid var(--panel-line); color: var(--ghost); cursor: pointer; padding: 10px 8px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; display: flex; flex-direction: column; gap: 3px; }
+.sd-btn small { color: var(--holo-dim); font-size: 8px; letter-spacing: 0.06em; }
+.sd-btn:hover { border-color: var(--holo); color: var(--holo); }
+.sd-btn.rec { border-color: var(--holo); }
 .auth-in { width: 260px; background: rgba(9,20,36,0.6); border: 1px solid var(--panel-line); outline: none;
   color: var(--ghost); font-family: var(--mono); font-size: 13px; letter-spacing: 0.08em; padding: 11px 14px; text-align: center; }
 .auth-in::placeholder { color: var(--holo-dim); opacity: 0.55; text-transform: uppercase; letter-spacing: 0.18em; font-size: 10px; }
@@ -3452,6 +3473,26 @@ function GridApp({ authSession, onSignOut }) {
     if (s.budget.seeded !== before) saveStore(s);
     return s;
   });
+  // ── cloud sync ── (engine + safety rules: src/syncEngine.js; table: docs/supabase/schema.sql)
+  const storeRef = useRef(store); storeRef.current = store;
+  const [sync, setSync] = useState({ status: "checking", conflict: null, syncedAt: null });
+  const engineRef = useRef(null);
+  const syncUserId = authSession?.user?.id;
+  useEffect(() => {
+    if (!syncUserId) return;
+    const engine = createSyncEngine({
+      userId: syncUserId, cloud, getStore: () => storeRef.current, onStatus: setSync,
+      applyRemote: (data) => { const s = saveStore(normalizeStore(data)); storeRef.current = s; setStore(s); return s; },
+    });
+    engineRef.current = engine;
+    engine.start();
+    const onVis = () => { if (document.visibilityState === "hidden") engine.flushNow(); else engine.syncNow(); };
+    const onOnline = () => engine.syncNow();
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("online", onOnline);
+    return () => { document.removeEventListener("visibilitychange", onVis); window.removeEventListener("online", onOnline); engine.dispose(); engineRef.current = null; };
+  }, [syncUserId]);
+  useEffect(() => { engineRef.current?.notifyChange(); }, [store]);
   const cockpitRef = useRef(null);
   const coreRef = useRef(null);
   // one thread for now — the tiles the other three pointed at were placeholder
@@ -3622,14 +3663,20 @@ function GridApp({ authSession, onSignOut }) {
   const importRef = useRef(null);
   const [backupMsg, setBackupMsg] = useState("");
   const flashBackup = (m) => { setBackupMsg(m); setTimeout(() => setBackupMsg(""), 5000); };
-  const doExport = () => {
-    const blob = new Blob([exportBackup(store)], { type: "application/json" });
+  const downloadText = (filename, text) => {
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `the-grid-backup-${dayKey(new Date())}.json`;
+    a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(a.href);
-    flashBackup("backup downloaded");
+  };
+  const doExport = () => { downloadText(`the-grid-backup-${dayKey(new Date())}.json`, exportBackup(store)); flashBackup("backup downloaded"); };
+  const handleSignOut = async () => {
+    await engineRef.current?.flushNow();
+    const st = engineRef.current ? sync.status : "synced";
+    if (["pending", "saving", "offline", "error", "conflict"].includes(st) &&
+        !window.confirm("Some changes haven't reached the cloud yet. Sign out anyway? They stay safe in this browser and sync when you sign back in.")) return;
+    onSignOut();
   };
   const doImport = async (file) => {
     if (!file) return;
@@ -3875,7 +3922,11 @@ function GridApp({ authSession, onSignOut }) {
               <button className="tb-back" onClick={() => importRef.current?.click()} title="restore from a backup file (replaces current data)">import</button>
               <input ref={importRef} type="file" accept="application/json,.json" style={{ display: "none" }}
                 onChange={e => { doImport(e.target.files[0]); e.target.value = ""; }} />
-              <button className="tb-back" onClick={onSignOut} title={"signed in as " + (authSession?.user?.email ?? "")}>sign out</button>
+              <button className={"tb-sync " + sync.status} onClick={() => engineRef.current?.syncNow()}
+                title={(sync.error ? sync.error + " — " : "") + (sync.syncedAt ? "last synced " + new Date(sync.syncedAt).toLocaleTimeString() + " — " : "") + "click to sync now"}>
+                cloud: {({ checking: "checking", synced: "synced", pending: "unsaved", saving: "saving…", offline: "offline", error: "error", conflict: "choose copy" })[sync.status] ?? sync.status}
+              </button>
+              <button className="tb-back" onClick={handleSignOut} title={"signed in as " + (authSession?.user?.email ?? "")}>sign out</button>
               <span>ses {session}</span><span className="live">{clock}</span>
             </div>
           </div>
@@ -4470,6 +4521,44 @@ function GridApp({ authSession, onSignOut }) {
         )}
       </div>
       <TileModal tile={expandedTile} onClose={() => setExpandedTile(null)} />
+      {sync.conflict && (
+        <SyncConflictDialog conflict={sync.conflict} local={store}
+          onResolve={(choice) => engineRef.current?.resolve(choice)}
+          onDownloadCloud={() => downloadText(`the-grid-CLOUD-copy-${dayKey(new Date())}.json`, exportBackup(normalizeStore(sync.conflict.remote.data)))}
+          onDownloadLocal={() => downloadText(`the-grid-THIS-BROWSER-copy-${dayKey(new Date())}.json`, exportBackup(store))} />
+      )}
+    </div>
+  );
+}
+
+// Shown when the sync engine refuses to guess. Deliberately cannot be dismissed by
+// clicking outside — sync is paused until one side is chosen. Both copies can be
+// downloaded first, so no choice here is irreversible.
+const SYNC_REASONS = {
+  "unlinked-both": "This browser has its own data, and your cloud copy has data too. They have never been linked, so The Grid won't guess which one wins.",
+  "diverged": "This browser and the cloud both changed since they last synced.",
+  "local-empty": "This browser's data looks empty, but your cloud copy has data. This usually means browser storage was cleared. Restoring from the cloud is almost certainly what you want.",
+  "remote-older": "The cloud copy is older than what this browser last synced with — something rolled it back. Check both before choosing.",
+};
+function SyncConflictDialog({ conflict, local, onResolve, onDownloadCloud, onDownloadLocal }) {
+  const sum = (s) => { const x = summarizeStore(s); return `${x.contacts} contacts · ${x.weeklyItems} weekly items · ${x.dailyItems} daily items · ${x.archivedWeeks} archived weeks`; };
+  const remote = conflict.remote;
+  return (
+    <div className="tile-modal-backdrop">
+      <div className="tile-modal alarm sync-dialog">
+        <div className="tm-head"><span className="tm-title">cloud sync · choose a copy</span></div>
+        <div className="sd-why">{SYNC_REASONS[conflict.reason] ?? "The two copies differ."}</div>
+        <div className="sd-cols">
+          <div className="sd-col"><b>cloud copy</b><i>saved {remote?.updated_at ? new Date(remote.updated_at).toLocaleString() : "—"}</i><span>{sum(remote?.data ? normalizeStore(remote.data) : null)}</span>
+            <button className="sd-dl" onClick={onDownloadCloud}>download it first</button></div>
+          <div className="sd-col"><b>this browser</b><i>right now</i><span>{sum(local)}</span>
+            <button className="sd-dl" onClick={onDownloadLocal}>download it first</button></div>
+        </div>
+        <div className="sd-actions">
+          <button className={"sd-btn" + (conflict.reason === "local-empty" ? " rec" : "")} onClick={() => onResolve("cloud")}>use cloud copy<small>replaces this browser</small></button>
+          <button className="sd-btn" onClick={() => onResolve("local")}>use this browser's copy<small>replaces the cloud copy</small></button>
+        </div>
+      </div>
     </div>
   );
 }

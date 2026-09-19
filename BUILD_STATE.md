@@ -70,8 +70,29 @@ conversation.
     context was tried twice and both times collapsed it into a ~5px skewed sliver.
     Escaping the transform context entirely is the fix.
 - **Persistent data layer** (`store.js`) — single versioned localStorage key
-  `grid.store.v1`, pure functions, no React. Holds `budget`, `weekly`, `ritual`, and
-  `metricsOutsourcing` slices. Honest constraint: per-browser, per-device, no sync yet.
+  `grid.store.v1`, pure functions, no React. Holds `budget`, `weekly`, `ritual`, `daily`,
+  `contactTracker`, and `metricsOutsourcing` slices. localStorage is the working copy;
+  the durable copy is Supabase (see next bullet). Topbar **export/import** writes/reads a
+  full-store JSON backup (validated, merge-forward, confirm-before-replace).
+- **Login + cloud sync (Supabase)** — email/password login gates the app *before* the
+  cosmetic PIN (`App` wrapper → `LoginScreen`; `GridApp` is the real app). Public URL +
+  publishable key live in `src/supabase.js`; protection is Row Level Security, never key
+  secrecy. Schema: `docs/supabase/schema.sql` (`grid_store` = one row per user, no delete
+  policy, server-bumped `revision`; `grid_store_history` = daily snapshot via trigger,
+  30 days). Sync is local-first: `src/syncEngine.js` (framework-free, tested by
+  `npm run test:sync`) + `src/cloud.js` (adapter). Pushes are optimistic-concurrency
+  updates, debounced ~2.5s; topbar chip shows synced/unsaved/saving/offline/error/choose-copy.
+  **It refuses to guess** — a dialog (both copies downloadable first) appears when: an
+  unlinked browser and the cloud both have real data; both sides changed; this browser
+  looks empty while the cloud has data (cleared/corrupt storage); or the cloud is older
+  than last sync. A fresh browser with no user data (`hasUserData()` in `store.js` —
+  Budget's mock placeholder does not count) just adopts the cloud copy. Sync meta lives in
+  `grid.sync.v1`, separate from the store, so it never enters backups. Signups are disabled
+  in Supabase (single user). Not verified by the author against the *real* Supabase
+  project as an authenticated user — the engine is covered by fake-cloud tests and a
+  fake-PostgREST browser run; first real login is the true end-to-end check.
+  Honest constraint still true: no cross-device push/notify (pull happens on load, focus,
+  and reconnect).
   - Flags are **derived fresh from data**, not stored, so a flag clears itself when the
     condition resolves. IDs are content-stable, which is what makes a dismissal stick
     instead of re-firing; dismissals persist in `dismissedFlags`.

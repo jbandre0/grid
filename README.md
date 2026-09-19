@@ -37,3 +37,5 @@ Row Level Security (`docs/supabase/schema.sql`) is what protects the data. **Nev
 the `service_role`/secret key or the database password.** Sign-ups should stay disabled in
 the Supabase dashboard (invite-only, single user).
 
+Sync safety rules are covered by `npm run test:sync` (fake cloud, no network needed).
+
