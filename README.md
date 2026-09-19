@@ -28,3 +28,12 @@ Pushing to `main` builds and publishes the app to GitHub Pages automatically
 (`.github/workflows/deploy.yml`) at `https://jbandre0.github.io/grid/`. One-time setup:
 repo **Settings → Pages → Source: "GitHub Actions"**. The production build uses the
 `/grid/` base path (set in `vite.config.js`); local dev is unchanged.
+
+## Cloud login (Supabase)
+
+The app opens on an email + password login (Supabase Auth), then the cosmetic PIN. The
+Supabase URL and *publishable* key are in `src/supabase.js` — they are public by design;
+Row Level Security (`docs/supabase/schema.sql`) is what protects the data. **Never commit
+the `service_role`/secret key or the database password.** Sign-ups should stay disabled in
+the Supabase dashboard (invite-only, single user).
+

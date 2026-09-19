@@ -21,6 +21,7 @@ import {
   exportBackup, parseBackup,
 } from "./store.js";
 import { seedMockBudget } from "./mockSeed.js";
+import { supabase } from "./supabase.js";
 import { createPortal } from "react-dom";
 
 // ─────────────────────────────────────────────────────────────
@@ -121,6 +122,11 @@ const CSS = `
   cursor: pointer; transition: all 0.2s ease; opacity: 0.4; pointer-events: none; }
 .enter-grid.ready { opacity: 1; pointer-events: auto; }
 .enter-grid.ready:hover { background: var(--holo); color: var(--void); box-shadow: 0 0 28px rgba(79,227,255,0.6); }
+.auth-in { width: 260px; background: rgba(9,20,36,0.6); border: 1px solid var(--panel-line); outline: none;
+  color: var(--ghost); font-family: var(--mono); font-size: 13px; letter-spacing: 0.08em; padding: 11px 14px; text-align: center; }
+.auth-in::placeholder { color: var(--holo-dim); opacity: 0.55; text-transform: uppercase; letter-spacing: 0.18em; font-size: 10px; }
+.auth-in:focus { border-color: var(--holo); box-shadow: 0 0 16px rgba(79,227,255,0.2); }
+.auth-err { font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; color: var(--alarm); text-transform: uppercase; max-width: 300px; text-align: center; }
 .lock-note { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.14em; color: var(--holo-dim);
   opacity: 0.7; max-width: 340px; text-align: center; text-transform: uppercase; line-height: 1.7; }
 
@@ -3424,7 +3430,7 @@ function MetricsOutsourcingSector({ store, now, onDismissInsight }) {
   );
 }
 
-export default function App() {
+function GridApp({ authSession, onSignOut }) {
   const [screen, setScreen] = useState("lock"); // lock | boot | dashboard | zone | allsectors
   const [sector, setSector] = useState(null);
   const [pin, setPin] = useState("");
@@ -3869,6 +3875,7 @@ export default function App() {
               <button className="tb-back" onClick={() => importRef.current?.click()} title="restore from a backup file (replaces current data)">import</button>
               <input ref={importRef} type="file" accept="application/json,.json" style={{ display: "none" }}
                 onChange={e => { doImport(e.target.files[0]); e.target.value = ""; }} />
+              <button className="tb-back" onClick={onSignOut} title={"signed in as " + (authSession?.user?.email ?? "")}>sign out</button>
               <span>ses {session}</span><span className="live">{clock}</span>
             </div>
           </div>
@@ -3886,7 +3893,7 @@ export default function App() {
               <button className="key util" onClick={() => pressKey("del")}>del</button>
             </div>
             <button className={"enter-grid" + (pin.length === 4 ? " ready" : "")} onClick={enterGrid}>enter the grid</button>
-            <div className="lock-note">session key marks you present in the grid. it is not encryption and not security — it gates sync only.</div>
+            <div className="lock-note">session key is a ritual, not security. your login is what protects your data.</div>
           </div>
         )}
 
@@ -4465,4 +4472,62 @@ export default function App() {
       <TileModal tile={expandedTile} onClose={() => setExpandedTile(null)} />
     </div>
   );
+}
+
+// ── auth gate ──
+// Login comes BEFORE the PIN ritual. The Supabase session persists in this
+// browser, so it's one login per browser, not per visit. Local data is never
+// touched by signing in or out — sync (step 2) layers on top of it.
+function AuthShell({ children }) {
+  return (
+    <div className="grid-root">
+      <style>{CSS}</style>
+      <Starfield />
+      <div className="grid-veil" /><div className="grid-scan" /><div className="grid-vignette" />
+      <div className="corner tl" /><div className="corner tr" /><div className="corner bl" /><div className="corner br" />
+      <div className="stage">{children}</div>
+    </div>
+  );
+}
+
+function LoginScreen() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const submit = async (e) => {
+    e.preventDefault();
+    if (busy || !email || !password) return;
+    setBusy(true); setErr("");
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    if (error) setErr(error.message); // on success onAuthStateChange swaps this screen out
+    setBusy(false);
+  };
+  return (
+    <AuthShell>
+      <form className="lock-wrap fade-up" onSubmit={submit}>
+        <div className="lock-title">The Grid</div>
+        <div className="lock-sub">// operator login · email + password</div>
+        <input className="auth-in" type="email" autoComplete="username" placeholder="email"
+          value={email} onChange={e => setEmail(e.target.value)} />
+        <input className="auth-in" type="password" autoComplete="current-password" placeholder="password"
+          value={password} onChange={e => setPassword(e.target.value)} />
+        {err && <div className="auth-err">{err}</div>}
+        <button type="submit" className={"enter-grid" + (email && password && !busy ? " ready" : "")}>{busy ? "checking…" : "sign in"}</button>
+        <div className="lock-note">this login is what protects your data. invite-only — there is no sign-up here.</div>
+      </form>
+    </AuthShell>
+  );
+}
+
+export default function App() {
+  const [session, setSession] = useState(undefined); // undefined = still checking, null = signed out
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s ?? null));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+  if (session === undefined) return <AuthShell><div className="lock-wrap"><div className="lock-sub">// checking session…</div></div></AuthShell>;
+  if (!session) return <LoginScreen />;
+  return <GridApp authSession={session} onSignOut={() => supabase.auth.signOut()} />;
 }
