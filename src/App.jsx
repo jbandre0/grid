@@ -1534,7 +1534,9 @@ const ALL_SECTORS = [
   // the sheet names carry emoji; they're stripped for the label and never used
   // as glyphs — locked stubs get a neutral mark, live sectors get their own
   ...ALL_SECTORS_RAW.map((raw, i) => {
-    const label = raw.replace(EMOJI_RE, "").trim();
+    // EMOJI_RE leaves variation selectors / joiners behind (e.g. a trailing U+FE0F),
+    // which silently broke the exact-label matches below — strip them too
+    const label = raw.replace(EMOJI_RE, "").replace(/[\uFE0E\uFE0F\u200D]/g, "").trim();
     // live sectors route to their real screen, not a locked sheet stub
     if (label === "Budget") return { key: "budget", label, glyph: "◈", locked: false };
     if (label === "Weekly Overview") return { key: "weekly", label, glyph: "▦", locked: false };
