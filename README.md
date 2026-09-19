@@ -21,3 +21,10 @@ Your app data is not in this folder at all — it lives in the browser's storage
 
 Anything you put in `private/` is ignored automatically, so that's the place for
 files that should stay on this laptop.
+
+## Deploying
+
+Pushing to `main` builds and publishes the app to GitHub Pages automatically
+(`.github/workflows/deploy.yml`) at `https://jbandre0.github.io/grid/`. One-time setup:
+repo **Settings → Pages → Source: "GitHub Actions"**. The production build uses the
+`/grid/` base path (set in `vite.config.js`); local dev is unchanged.
