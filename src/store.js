@@ -193,6 +193,12 @@ const DEFAULT_STORE = {
   projectTracker: {
     projects: [], // { id, name, zone, state, notes, targetDate, createdAt, updatedAt }
   },
+  // Life Goals — see docs/specs/LIFE_GOALS_SPEC.md. Tier structure (Life →
+  // Year → Quarter) is INFERRED, not confirmed by the user. parentId is the
+  // cascading link BUILD_STATE.md's open item #8 already anticipated.
+  lifeGoals: {
+    goals: [], // { id, tier, parentId, title, notes, period, status, createdAt, updatedAt }
+  },
   // One-directional write target for Close Week. Weekly Overview never reads
   // this back. Weekly Metrics Outsourcing (Build 1) is the passive read-only
   // archive on the receiving end — it displays these rows, it never writes them.
@@ -230,6 +236,7 @@ function mergeDefaults(parsed) {
     daily: { ...structuredClone(DEFAULT_STORE.daily), ...(parsed.daily || {}) },
     contactTracker: { ...structuredClone(DEFAULT_STORE.contactTracker), ...(parsed.contactTracker || {}) },
     projectTracker: { ...structuredClone(DEFAULT_STORE.projectTracker), ...(parsed.projectTracker || {}) },
+    lifeGoals: { ...structuredClone(DEFAULT_STORE.lifeGoals), ...(parsed.lifeGoals || {}) },
     // steps only merge forward if the template was never touched — once the
     // user has edited it, their list wins outright and defaults never re-add
     ritual: parsed.ritual?.steps?.length ? parsed.ritual : structuredClone(DEFAULT_STORE.ritual),
@@ -249,7 +256,7 @@ export function hasUserData(s) {
   if (!s || typeof s !== "object") return false;
   const filled = (v) => typeof v === "string" ? v.trim() !== "" : v != null;
   const anyFilled = (arr) => Array.isArray(arr) && arr.some(x => (typeof x === "object" && x ? (x.text ?? x.name ?? "") !== "" || Object.keys(x).length > 2 : filled(x)));
-  const w = s.weekly || {}, d = s.daily || {}, c = s.contactTracker || {}, p = s.projectTracker || {}, mo = s.metricsOutsourcing || {}, b = s.budget || {};
+  const w = s.weekly || {}, d = s.daily || {}, c = s.contactTracker || {}, p = s.projectTracker || {}, lg = s.lifeGoals || {}, mo = s.metricsOutsourcing || {}, b = s.budget || {};
   if (filled(w.theme) || anyFilled(w.priorities) || (w.tasks || []).length || (w.goals || []).length) return true;
   if (filled(w.stopStart?.stop) || filled(w.stopStart?.start)) return true;
   if (Object.keys(w.ritualChecked || {}).length || Object.keys(w.metrics || {}).length) return true;
@@ -260,6 +267,7 @@ export function hasUserData(s) {
   if (Object.values(d.reflection || {}).some(filled)) return true;
   if ((c.contacts || []).length) return true;
   if ((p.projects || []).length) return true;
+  if ((lg.goals || []).length) return true;
   if ((mo.rows || []).length) return true;
   const recs = [...(b.capital?.accounts || []), ...(b.capital?.monthlyLog || []), ...(b.assets || []), ...(b.oweLedger || []),
     ...(b.categories || []), ...(b.spendEntries || []), ...(b.netWorthLog || [])];
@@ -273,6 +281,7 @@ export function summarizeStore(s) {
   return {
     contacts: s?.contactTracker?.contacts?.length || 0,
     projects: s?.projectTracker?.projects?.length || 0,
+    lifeGoals: s?.lifeGoals?.goals?.length || 0,
     weeklyItems: (w.tasks?.length || 0) + (w.goals?.length || 0),
     dailyItems: (d.tasks?.length || 0) + (d.priorities?.length || 0) + (d.goals?.length || 0) + (d.homework?.length || 0),
     archivedWeeks: s?.metricsOutsourcing?.rows?.length || 0,
@@ -304,7 +313,7 @@ export function parseBackup(text) {
   let obj;
   try { obj = JSON.parse(text); } catch { return { ok: false, error: "not valid JSON" }; }
   if (obj?.app !== "the-grid" || !obj.store || typeof obj.store !== "object") return { ok: false, error: "not a THE GRID backup file" };
-  for (const k of ["budget", "weekly", "daily", "contactTracker", "projectTracker", "metricsOutsourcing"]) {
+  for (const k of ["budget", "weekly", "daily", "contactTracker", "projectTracker", "lifeGoals", "metricsOutsourcing"]) {
     if (obj.store[k] != null && (typeof obj.store[k] !== "object" || Array.isArray(obj.store[k]))) return { ok: false, error: `backup has a malformed "${k}" section` };
   }
   return { ok: true, store: mergeDefaults(obj.store), exportedAt: obj.exportedAt };
@@ -490,6 +499,57 @@ export function projectMoveZone(pt, id, zone) {
 export function projectSetState(pt, id, state) {
   if (!PROJECT_STATES.includes(state)) return pt;
   return { ...pt, projects: pt.projects.map(p => p.id === id ? { ...p, state, updatedAt: dayKey() } : p) };
+}
+
+// ── Life Goals ──
+// See docs/specs/LIFE_GOALS_SPEC.md — tier structure (Life → Year → Quarter)
+// is INFERRED, not confirmed. Same pure-mutator shape as Project Tracker.
+const lgNewId = () => globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2, 10);
+export const LIFE_GOAL_TIERS = ["life", "year", "quarter"];
+export const LIFE_GOAL_PARENT_TIER = { year: "life", quarter: "year" }; // life has none
+export const LIFE_GOAL_STATES = ["Active", "Standby", "Dormant", "Archived"]; // kept
+// independent from PROJECT_STATES even though the values are identical — see
+// spec: each sector's controlled sets stay their own, same project convention
+// as Contact Tracker's 1–5 priority staying separate from Daily's 1–3.
+
+// Year/quarter goals must name an existing parent one tier up — "input builds
+// off other levels" is enforced here, not just suggested in the UI. Life
+// goals never have a parent. Returns lg unchanged if the tier/parent
+// combination is invalid (caller should check before calling, but this stays
+// safe either way, same defensiveness as projectMoveZone's zone check).
+export function goalAdd(lg, tier, parentId, title = "") {
+  if (!LIFE_GOAL_TIERS.includes(tier)) return lg;
+  const wantParentTier = LIFE_GOAL_PARENT_TIER[tier] || null;
+  if (wantParentTier) {
+    const parent = lg.goals.find(g => g.id === parentId && g.tier === wantParentTier);
+    if (!parent) return lg;
+  } else if (parentId) {
+    return lg; // life tier: no parent allowed
+  }
+  const k = dayKey();
+  const goal = { id: lgNewId(), tier, parentId: wantParentTier ? parentId : null,
+    title: String(title || "").trim(), notes: "", period: "", status: "Active", createdAt: k, updatedAt: k };
+  return { ...lg, goals: [...lg.goals, goal] };
+}
+export function goalEdit(lg, id, field, value) {
+  return { ...lg, goals: lg.goals.map(g => g.id === id ? { ...g, [field]: value, updatedAt: dayKey() } : g) };
+}
+export function goalSetStatus(lg, id, status) {
+  if (!LIFE_GOAL_STATES.includes(status)) return lg;
+  return { ...lg, goals: lg.goals.map(g => g.id === id ? { ...g, status, updatedAt: dayKey() } : g) };
+}
+// direct children only (one tier down) — used to build the tree and to warn
+// before a cascading delete
+export const goalChildren = (lg, id) => lg.goals.filter(g => g.parentId === id);
+// all descendants at any depth, deepest-first — used by goalRemove so a
+// cascading delete never leaves an orphaned parentId pointing at nothing
+export function goalDescendants(lg, id) {
+  const direct = goalChildren(lg, id);
+  return direct.flatMap(c => [...goalDescendants(lg, c.id), c]);
+}
+export function goalRemove(lg, id) {
+  const doomed = new Set([id, ...goalDescendants(lg, id).map(g => g.id)]);
+  return { ...lg, goals: lg.goals.filter(g => !doomed.has(g.id)) };
 }
 
 // ── Daily Overview → Contact Tracker sync (Module 3, real for this build) ──

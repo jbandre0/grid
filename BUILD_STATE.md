@@ -17,7 +17,10 @@ and spec doc for full detail; summary:
    to Zone L) and **no priority field was added** — both unilateral calls, see the spec.
 3. **Life Goals** — new sector, doesn't exist before this session at all. **Tier
    structure (Life → Year → Quarter) is inferred, not confirmed** — see
-   `docs/specs/LIFE_GOALS_SPEC.md`.
+   `docs/specs/LIFE_GOALS_SPEC.md`. Notably: **Quarter was chosen over Month** (to
+   avoid overlapping Weekly/Daily Overview's own goals lists), and **a lower tier
+   can't be added until its parent tier exists** (a real constraint, not just a UI
+   suggestion) — both unilateral calls.
 
 ---
 
@@ -255,6 +258,44 @@ user's Gmail as author; they explicitly said that's fine.
   - **Deferred, not built this session:** overdue/target-date alarm styling, a
     dedicated Archive view/filter, any dashboard tile, and any Life Goals link (Project
     Tracker isn't named in BUILD_STATE's cross-link open items, so nothing was wired).
+- **Life Goals sector** (`screen === "lifeGoals"`, **not pinned**, glyph **◎**) — **did
+  not exist at all before this session** — no spec, no slice, no screen, not on the
+  dial. Full brief + every inferred decision in **`docs/specs/LIFE_GOALS_SPEC.md`** —
+  none of this was confirmed, built purely from the user's one explicit requirement
+  ("input builds off other levels of life goals") plus the project's existing patterns.
+  - **Tier structure: Life → Year → Quarter**, each linked via `parentId` (exactly the
+    field open item #8 below already anticipated). Life = multi-year/identity-level
+    themes, Year = a year's expression of one, Quarter = a quarter's step toward a Year
+    goal. **Quarter was picked over Month, unilaterally** — Month would mostly
+    duplicate Weekly/Daily Overview's own goal lists; Quarter leaves a clean gap. Easy
+    to rename if the user wanted Month.
+  - **A lower tier can't be added until its parent tier exists** — no Year goal before
+    at least one Life goal, no Quarter goal before at least one Year goal. This is
+    enforced in `goalAdd` (store.js), not just a UI nicety. **Unilateral, flagged** —
+    literal reading of "input builds off other levels," may read as too rigid.
+  - **Status reuses Active/Standby/Dormant/Archived** (own `LIFE_GOAL_STATES` constant,
+    independent from `PROJECT_STATES` even though the values match — same per-sector
+    controlled-set convention as Contact Tracker's priority scale).
+  - **Removing a goal cascades to its descendants** (`goalRemove`/`goalDescendants` in
+    store.js) — deleting a Life goal also deletes its Year/Quarter children, rather
+    than leaving a dangling `parentId`. The UI confirms first if there are any children.
+  - **`lifeGoals` slice**: `{ goals: [{ id, tier, parentId, title, notes, period,
+    status, createdAt, updatedAt }] }`. Pure mutators: `goalAdd`/`goalEdit`/
+    `goalSetStatus`/`goalRemove`/`goalChildren`/`goalDescendants`. Additive through
+    `mergeDefaults`.
+  - **UI:** `LifeGoalsBoard` — a cascading tree (not independent zone clusters like
+    Project Tracker; this sector is explicitly hierarchical), indentation + a "↳ rolls
+    up to: <parent>" tag on every non-root card. Three add bars (Life always open,
+    Year/Quarter blocked with an explanatory message until a parent tier exists). Own
+    `lg-` CSS prefix; reuses `pt-state`/`pt-notes-toggle`/`pt-notes`/`pt-add-in`/
+    `do-add` since those carry no sector-specific meaning.
+  - **Ships blank** — no seed data.
+  - **Deferred, not built this session:** wiring to Weekly Overview's Goals or Daily
+    Overview's Today's Goals (open item #8 already flagged this as a future target;
+    it's a real architecture decision — copy vs. live reference vs. one-directional
+    write like Close Week → Metrics Outsourcing — not a guess to make unilaterally).
+    Also deferred: any dashboard tile, alarm/overdue logic on `period`, reordering
+    within a tier.
 - **Weekly Metrics Outsourcing sector** (`screen === "metricsOutsourcing"`, live, **not**
   pinned, glyph **▥**) — passive read-only archive + analysis toolkit for Weekly
   Overview's closed weeks. Full brief in **`docs/specs/WEEKLY_METRICS_OUTSOURCING_SPEC.md`**.
@@ -383,8 +424,11 @@ user's Gmail as author; they explicitly said that's fine.
    provider) — a genuine architecture decision, not a follow-on; Supabase is the foundation.
    Natural-language spend entry also deferred (cloud LLM would need explicit sign-off
    before financial text leaves the device).
-8. **Wire cross-sector links as targets appear:** Today's Goals ← Life Goals; Reflection
-    buttons → Learning Matrix / Spirituality; People ← Contact Tracker.
+8. **Wire cross-sector links as targets appear:** Today's Goals ← Life Goals (**Life
+    Goals sector now exists and its `parentId` chain is ready for this**, but the link
+    itself is still unwired — deferred, see its section above, a real architecture
+    decision); Reflection buttons → Learning Matrix / Spirituality; **People ← Contact
+    Tracker is done** (see Contact Tracker section above).
 9. **Labels are still plain/corporate** across sectors; project direction wants cryptic
     personal lingo. Decided to do it per sector as each is built — no sector has done the
     pass yet.
@@ -401,8 +445,17 @@ user's Gmail as author; they explicitly said that's fine.
     `docs/specs/PROJECT_TRACKER_SPEC.md`), but every zone/state meaning in it is
     **inferred, not confirmed** — needs a review pass.
 13. **Global notification bus** — Budget's flags are bus-compatible, but the bus itself
-    (and cross-sector flags) needs its own outline-and-approval pass. Remaining life
-    sectors (Life Goals, Learning Matrix, Spirituality, Health, Habits…) don't exist.
+    (and cross-sector flags) needs its own outline-and-approval pass. **Life Goals now
+    exists** (see its section above); remaining life sectors (Learning Matrix,
+    Spirituality, Health, Habits…) still don't.
+14. **Screenshot-diff loop not run this session.** CLAUDE.md's visual-design rules ask
+    for a real render → screenshot → compare pass after any visual change, but this
+    unsupervised session had no browser/screenshot tool available — Project Tracker's
+    and Life Goals' UI were checked by build success, the store-level test suite, and
+    direct node calls against the new store.js mutators, **not** by looking at the
+    rendered page. **This needs an actual visual pass before either is considered
+    matched to the cockpit aesthetic** — treat both sectors' current CSS as an
+    unverified first draft.
 
 ## How to verify visual work
 

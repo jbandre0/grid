@@ -20,6 +20,7 @@ import {
   touchDay, dayKey, dayOfYear, homeworkDueToday, homeworkOverdueCount,
   CONTACT_FREQUENCIES, contactNextDate, contactOverdue, contactDueToday, contactSyncTargets,
   PROJECT_ZONES, PROJECT_STATES, projectAdd, projectEdit, projectMoveZone, projectSetState, projectRemove,
+  LIFE_GOAL_TIERS, LIFE_GOAL_STATES, goalAdd, goalEdit, goalSetStatus, goalRemove, goalChildren, goalDescendants,
   exportBackup, parseBackup, normalizeStore, summarizeStore,
 } from "./store.js";
 import { supabase } from "./supabase.js";
@@ -881,6 +882,51 @@ const CSS = `
   font-family: var(--mono); font-size: 9px; padding: 5px 6px; outline: none; resize: none; overflow: hidden; }
 .pt-notes:focus { border-color: var(--holo-dim); }
 
+/* Life Goals — own lg- prefix. Cascading tree (Life → Year → Quarter), NOT
+   independent zone clusters like Project Tracker — indentation + a "rolls up
+   to" tag on every non-root card carry the hierarchy. Reuses pt-state/
+   pt-notes-toggle/pt-notes/pt-add-in/do-add since those carry no
+   sector-specific meaning, matching Contact Tracker's reuse convention. */
+.lg-board { margin-top: 4px; }
+.lg-add-bars { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px;
+  padding: 10px 12px; border: 1px dashed var(--panel-line); background: rgba(6,12,24,0.3); }
+.lg-add-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lg-add-lab { font-family: var(--mono); font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--holo-dim); width: 52px; flex-shrink: 0; }
+.lg-add-blocked { font-family: var(--mono); font-size: 9px; color: var(--holo-dim); font-style: italic; }
+.lg-parent-select { width: 180px; }
+.lg-tree { display: flex; flex-direction: column; gap: 16px; }
+.lg-life-block { display: flex; flex-direction: column; gap: 8px; }
+.lg-children { display: flex; flex-direction: column; gap: 8px; margin-left: 22px;
+  padding-left: 12px; border-left: 1px solid var(--panel-line); }
+.lg-year-block { display: flex; flex-direction: column; gap: 8px; }
+
+.lg-card { width: 260px; background: rgba(6,12,24,0.45); border: 1px solid var(--panel-line);
+  padding: 8px 9px 7px; display: flex; flex-direction: column; gap: 5px; }
+.lg-tier-life { border-left: 2px solid var(--holo); width: 300px; }
+.lg-tier-year { border-left: 2px solid var(--holo-dim); }
+.lg-tier-quarter { border-left: 2px solid var(--panel-line); width: 240px; }
+.lg-card.archived { opacity: 0.55; }
+.lg-card.archived .lg-title { text-decoration: line-through; }
+.lg-card-top { display: flex; align-items: flex-start; gap: 6px; }
+.lg-tier-tag { font-family: var(--mono); font-size: 7px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--holo-dim); flex-shrink: 0; padding-top: 2px; }
+.lg-title { flex: 1; background: transparent; border: none; outline: none; resize: none; overflow: hidden;
+  color: var(--ghost); font-family: var(--mono); font-size: 11px; line-height: 1.3; padding: 0;
+  border-bottom: 1px dashed transparent; }
+.lg-title:hover { border-bottom-color: rgba(79,227,255,0.22); }
+.lg-title:focus { border-bottom-color: var(--holo); }
+.lg-title::placeholder { color: var(--holo-dim); opacity: 0.6; }
+.lg-rollup { font-family: var(--mono); font-size: 8px; letter-spacing: 0.04em; color: var(--holo-dim); }
+.lg-card-row { display: flex; align-items: center; gap: 6px; }
+.lg-state-active { color: var(--holo); border-color: var(--holo-dim); text-shadow: 0 0 5px rgba(79,227,255,0.4); }
+.lg-state-standby { color: var(--gold); border-color: var(--gold); opacity: 0.85; }
+.lg-state-dormant { color: var(--holo-dim); }
+.lg-state-archived { color: var(--ghost-dim); opacity: 0.7; }
+.lg-period { flex: 1; max-width: 100px; background: transparent; border: 1px solid var(--panel-line);
+  color: var(--ghost-dim); font-family: var(--mono); font-size: 9px; padding: 3px 5px; outline: none; }
+.lg-period::placeholder { color: var(--holo-dim); opacity: 0.5; }
+
 .do-task-row { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--panel-line); }
 .do-task-row:last-of-type { border-bottom: none; }
 .do-task-row.checked .do-in { color: var(--holo-dim); text-decoration: line-through; opacity: 0.6; }
@@ -1621,6 +1667,9 @@ const ALL_SECTORS = [
     // Not pinned — reachable only from the All Sectors grid, same treatment
     // as Weekly Metrics Outsourcing (see docs/specs/CONTACT_TRACKER_SPEC.md).
     if (label === "Contact Tracker") return { key: "contactTracker", label, glyph: "◫", locked: false };
+    // Not pinned — reachable only from the All Sectors grid, by explicit task
+    // instruction (see docs/specs/LIFE_GOALS_SPEC.md). ◎ was unused.
+    if (label === "Life Goals") return { key: "lifeGoals", label, glyph: "◎", locked: false };
     return { key: "sheet_" + i, label, glyph: "▫", locked: true };
   }),
 ];
@@ -2637,6 +2686,129 @@ function ProjectTracker({ projects, onAdd, onEdit, onMoveZone, onSetState, onRem
                 ))}
               </div>
             </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Life Goals — cascading tier tree (Life → Year → Quarter). See
+// docs/specs/LIFE_GOALS_SPEC.md: tier structure is INFERRED, not confirmed.
+// Unlike Project Tracker's independent zone clusters, this is explicitly
+// hierarchical — each tier nests under its parent rather than sitting in its
+// own bucket, and a lower tier can't be added until its parent tier exists
+// (enforced in store.js's goalAdd, not just suggested here).
+const LG_TIER_LABEL = { life: "Life", year: "Year", quarter: "Quarter" };
+const LG_STATE_CYCLE = LIFE_GOAL_STATES;
+
+function GoalCard({ g, parentTitle, onEdit, onSetStatus, onRemove }) {
+  const [open, setOpen] = useState(false);
+  const cycleStatus = () => onSetStatus(g.id, LG_STATE_CYCLE[(LG_STATE_CYCLE.indexOf(g.status) + 1) % LG_STATE_CYCLE.length]);
+  return (
+    <div className={"lg-card lg-tier-" + g.tier + (g.status === "Archived" ? " archived" : "")}>
+      <div className="lg-card-top">
+        <span className="lg-tier-tag">{LG_TIER_LABEL[g.tier]}</span>
+        <AutoText className="lg-title" value={g.title} placeholder="untitled goal"
+          onChange={e => onEdit(g.id, "title", e.target.value)} />
+        <button className="do-x" onClick={() => onRemove(g.id)} aria-label="Remove goal">✕</button>
+      </div>
+      {parentTitle && <div className="lg-rollup">↳ rolls up to: {parentTitle || "—"}</div>}
+      <div className="lg-card-row">
+        <button className={"pt-state lg-state-" + g.status.toLowerCase()} onClick={cycleStatus}>{g.status}</button>
+        {g.tier !== "life" && (
+          <input className="lg-period" value={g.period} placeholder={g.tier === "year" ? "e.g. 2026" : "e.g. 2026 Q3"}
+            onChange={e => onEdit(g.id, "period", e.target.value)} />
+        )}
+      </div>
+      <button className="pt-notes-toggle" onClick={() => setOpen(o => !o)}>{open ? "▲ notes" : "▼ notes" + (g.notes ? " ·" : "")}</button>
+      {open && (
+        <AutoText className="pt-notes" value={g.notes} placeholder="—"
+          onChange={e => onEdit(g.id, "notes", e.target.value)} />
+      )}
+    </div>
+  );
+}
+
+function LifeGoalsBoard({ goals, onAdd, onEdit, onSetStatus, onRemove }) {
+  const lifeGoals = goals.filter(g => g.tier === "life");
+  const yearGoals = goals.filter(g => g.tier === "year");
+  const [newLife, setNewLife] = useState("");
+  const [newYear, setNewYear] = useState("");
+  const [newYearParent, setNewYearParent] = useState("");
+  const [newQuarter, setNewQuarter] = useState("");
+  const [newQuarterParent, setNewQuarterParent] = useState("");
+
+  const addLife = () => { if (newLife.trim()) { onAdd("life", null, newLife); setNewLife(""); } };
+  const addYear = () => { if (newYear.trim() && newYearParent) { onAdd("year", newYearParent, newYear); setNewYear(""); } };
+  const addQuarter = () => { if (newQuarter.trim() && newQuarterParent) { onAdd("quarter", newQuarterParent, newQuarter); setNewQuarter(""); } };
+
+  return (
+    <div className="lg-board">
+      <div className="lg-add-bars">
+        <div className="lg-add-bar">
+          <span className="lg-add-lab">Life</span>
+          <input className="pt-add-in" value={newLife} placeholder="new life-level theme"
+            onChange={e => setNewLife(e.target.value)} onKeyDown={e => e.key === "Enter" && addLife()} />
+          <button className="do-add" onClick={addLife}>+ add</button>
+        </div>
+        <div className="lg-add-bar">
+          <span className="lg-add-lab">Year</span>
+          {lifeGoals.length === 0 ? <span className="lg-add-blocked">add a Life goal first</span> : (
+            <>
+              <select className="ct-select lg-parent-select" value={newYearParent} onChange={e => setNewYearParent(e.target.value)}>
+                <option value="">— rolls up to —</option>
+                {lifeGoals.map(l => <option key={l.id} value={l.id}>{l.title || "untitled"}</option>)}
+              </select>
+              <input className="pt-add-in" value={newYear} placeholder="new year goal"
+                onChange={e => setNewYear(e.target.value)} onKeyDown={e => e.key === "Enter" && addYear()} />
+              <button className="do-add" onClick={addYear}>+ add</button>
+            </>
+          )}
+        </div>
+        <div className="lg-add-bar">
+          <span className="lg-add-lab">Quarter</span>
+          {yearGoals.length === 0 ? <span className="lg-add-blocked">add a Year goal first</span> : (
+            <>
+              <select className="ct-select lg-parent-select" value={newQuarterParent} onChange={e => setNewQuarterParent(e.target.value)}>
+                <option value="">— rolls up to —</option>
+                {yearGoals.map(y => <option key={y.id} value={y.id}>{y.title || "untitled"}</option>)}
+              </select>
+              <input className="pt-add-in" value={newQuarter} placeholder="new quarter goal"
+                onChange={e => setNewQuarter(e.target.value)} onKeyDown={e => e.key === "Enter" && addQuarter()} />
+              <button className="do-add" onClick={addQuarter}>+ add</button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {lifeGoals.length === 0 && <div className="do-empty">no life goals set yet</div>}
+      <div className="lg-tree">
+        {lifeGoals.map(life => {
+          const years = goals.filter(g => g.parentId === life.id);
+          return (
+            <div className="lg-life-block" key={life.id}>
+              <GoalCard g={life} onEdit={onEdit} onSetStatus={onSetStatus} onRemove={onRemove} />
+              {years.length > 0 && (
+                <div className="lg-children">
+                  {years.map(year => {
+                    const quarters = goals.filter(g => g.parentId === year.id);
+                    return (
+                      <div className="lg-year-block" key={year.id}>
+                        <GoalCard g={year} parentTitle={life.title} onEdit={onEdit} onSetStatus={onSetStatus} onRemove={onRemove} />
+                        {quarters.length > 0 && (
+                          <div className="lg-children">
+                            {quarters.map(q => (
+                              <GoalCard key={q.id} g={q} parentTitle={year.title} onEdit={onEdit} onSetStatus={onSetStatus} onRemove={onRemove} />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           );
         })}
       </div>
@@ -4050,6 +4222,7 @@ function GridApp({ authSession, onSignOut }) {
     if (s.key === "dailyOverview") { setScreen("dailyOverview"); return; }
     if (s.key === "contactTracker") { setScreen("contactTracker"); return; }
     if (s.key === "projects") { setScreen("projects"); return; }
+    if (s.key === "lifeGoals") { setScreen("lifeGoals"); return; }
     setSector(s); setScreen("zone");
   };
   const cycleMood = () => setMoodIdx(i => (i + 1) % MOOD_CYCLE.length);
@@ -4066,6 +4239,7 @@ function GridApp({ authSession, onSignOut }) {
   const daily = store.daily;
   const contactTracker = store.contactTracker;
   const projectTracker = store.projectTracker;
+  const lifeGoals = store.lifeGoals;
   const budgetFlags = activeFlags(budget, now);
 
   // ── weekly writers ──
@@ -4184,6 +4358,17 @@ function GridApp({ authSession, onSignOut }) {
   const projMoveZone = (id, zone) => writeProjectTracker(pt => projectMoveZone(pt, id, zone));
   const projSetState = (id, state) => writeProjectTracker(pt => projectSetState(pt, id, state));
   const projRemove = (id) => writeProjectTracker(pt => projectRemove(pt, id));
+
+  // ── life goals writers ── (mutators live in store.js, see LIFE_GOALS_SPEC.md)
+  const writeLifeGoals = (fn) => setStore(s => saveStore({ ...s, lifeGoals: fn(s.lifeGoals) }));
+  const glAdd = (tier, parentId, title) => writeLifeGoals(lg => goalAdd(lg, tier, parentId, title));
+  const glEdit = (id, field, v) => writeLifeGoals(lg => goalEdit(lg, id, field, v));
+  const glSetStatus = (id, status) => writeLifeGoals(lg => goalSetStatus(lg, id, status));
+  const glRemove = (id) => {
+    const kids = goalDescendants(lifeGoals, id).length;
+    if (kids > 0 && !window.confirm(`This also removes ${kids} goal${kids === 1 ? "" : "s"} rolled up under it. Remove anyway?`)) return;
+    writeLifeGoals(lg => goalRemove(lg, id));
+  };
 
   // ── backup / restore ── (see exportBackup/parseBackup in store.js)
   const importRef = useRef(null);
@@ -4432,7 +4617,7 @@ function GridApp({ authSession, onSignOut }) {
         {screen !== "lock" && screen !== "boot" && (
           <div className="topbar">
             <div className="tb-left">
-              {screen === "zone" || screen === "allsectors" || screen === "budget" || screen === "weekly" || screen === "metricsOutsourcing" || screen === "dailyOverview" || screen === "contactTracker" || screen === "projects"
+              {screen === "zone" || screen === "allsectors" || screen === "budget" || screen === "weekly" || screen === "metricsOutsourcing" || screen === "dailyOverview" || screen === "contactTracker" || screen === "projects" || screen === "lifeGoals"
                 ? <button className="tb-back" onClick={() => setScreen("dashboard")}>◄ grid dashboard</button>
                 : <span className="live"><span className="dot-live" />the grid // online</span>}
             </div>
@@ -4958,6 +5143,17 @@ function GridApp({ authSession, onSignOut }) {
             </div>
             <ProjectTracker projects={projectTracker.projects}
               onAdd={projAdd} onEdit={projEdit} onMoveZone={projMoveZone} onSetState={projSetState} onRemove={projRemove} />
+          </div>
+        )}
+
+        {screen === "lifeGoals" && (
+          <div className="zoneview fade-up">
+            <div className="zv-head">
+              <span className="zv-code">◎</span>
+              <span className="zv-name">Life Goals · live sector</span>
+            </div>
+            <LifeGoalsBoard goals={lifeGoals.goals}
+              onAdd={glAdd} onEdit={glEdit} onSetStatus={glSetStatus} onRemove={glRemove} />
           </div>
         )}
 
