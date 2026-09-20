@@ -12,7 +12,9 @@ and spec doc for full detail; summary:
 1. **Contact Tracker increments 3–4** — done, see its section below.
 2. **Project Tracker** — built from zero, first real structure. **Zone L/S/1/Shelf and
    the state machine are inferred, not confirmed** — see
-   `docs/specs/PROJECT_TRACKER_SPEC.md`, flagged there explicitly.
+   `docs/specs/PROJECT_TRACKER_SPEC.md`, flagged there explicitly. Notably: **Zone 1 is
+   enforced as single-occupant** (moving a project in evicts whatever was already there
+   to Zone L) and **no priority field was added** — both unilateral calls, see the spec.
 3. **Life Goals** — new sector, doesn't exist before this session at all. **Tier
    structure (Life → Year → Quarter) is inferred, not confirmed** — see
    `docs/specs/LIFE_GOALS_SPEC.md`.
@@ -221,6 +223,38 @@ user's Gmail as author; they explicitly said that's fine.
   - **Deferred, not built this session:** the sheet's "Scheduled Calls" block
     (Who/Day/Time/Status/Calendar?, 4 rows) and any dashboard tile — time went to
     Project Tracker and Life Goals instead, per the session's task order.
+- **Project Tracker sector** (`screen === "projects"`, **pinned**, glyph **◆**) — **built
+  from zero this session**, first real structure. Full brief + every inferred decision
+  in **`docs/specs/PROJECT_TRACKER_SPEC.md`** — none of this was confirmed with the
+  user, it's the most conservative/reversible reading of the project's own fixed
+  terminology (Zone L, Zone S, Zone 1, The Shelf, Active/Standby/Dormant/Archived).
+  - **Read: Zone L = long-term/large, Zone S = short-term/small, Zone 1 = the single
+    current top-priority focus project, The Shelf = parked/someday ideas not yet
+    promoted.** `projectTracker` slice: `{ projects: [{ id, name, zone, state, notes,
+    targetDate, createdAt, updatedAt }] }`. Pure mutators in `store.js`
+    (`projectAdd`/`projectEdit`/`projectMoveZone`/`projectSetState`/`projectRemove`),
+    same shape as Budget's `logSpend`/`undoSpend`/`removeCategory`.
+  - **Zone 1 is enforced as single-occupant** — `projectMoveZone` evicts whatever
+    project was already in Zone 1 back to Zone L when another moves in. This is the
+    one structural rule added beyond a plain tag; **unilateral, flagged for review.**
+  - **State transitions are unrestricted** — any state to any other via a direct
+    cycling button, no confirm dialog, no required order. **Unilateral, flagged.**
+  - **No priority field.** CLAUDE.md warns against unifying priority scales across
+    sectors (Daily's 1–3, Contact Tracker's 1–5 are already distinct); zone assignment
+    (especially Zone 1) already carries that signal. **Unilateral, flagged** — easy to
+    add later if wanted.
+  - **`targetDate` is a soft, freeform date with no overdue/alarm logic wired to it** —
+    CLAUDE.md's red-is-alarm-only rule means "overdue" needs its own definition for an
+    open-ended project first. Left uncolored.
+  - **UI:** `ProjectTracker` zone board (`App.jsx`) — 4 zone clusters, CSS-jittered
+    (`nth-child` rotation, not inline randomization) scattered project cards, own `pt-`
+    prefix. Zone 1's cluster is visually distinct (larger single-card slot). New
+    projects always land in The Shelf regardless of an initial-zone picker, since a new
+    idea reads as unsorted by default — the user promotes it into a real zone.
+  - **Ships blank** — no seed data, per the public-repo rule.
+  - **Deferred, not built this session:** overdue/target-date alarm styling, a
+    dedicated Archive view/filter, any dashboard tile, and any Life Goals link (Project
+    Tracker isn't named in BUILD_STATE's cross-link open items, so nothing was wired).
 - **Weekly Metrics Outsourcing sector** (`screen === "metricsOutsourcing"`, live, **not**
   pinned, glyph **▥**) — passive read-only archive + analysis toolkit for Weekly
   Overview's closed weeks. Full brief in **`docs/specs/WEEKLY_METRICS_OUTSOURCING_SPEC.md`**.
@@ -363,9 +397,9 @@ user's Gmail as author; they explicitly said that's fine.
     In/Out chart are nearly invisible** (JUL `+$5.30` on a ±600 scale — left truthful);
     **top ornament** (arc of dots between two "eye" shapes) built once, dropped, never
     re-added.
-12. **Project Tracker has no data model at all** — no records, no Zone L/S/1/Shelf
-    structures, no Active/Standby/Dormant/Archived state machine. The zone screen is an
-    empty-state placeholder. User deferred it.
+12. **Project Tracker — built this session** (see its section above and
+    `docs/specs/PROJECT_TRACKER_SPEC.md`), but every zone/state meaning in it is
+    **inferred, not confirmed** — needs a review pass.
 13. **Global notification bus** — Budget's flags are bus-compatible, but the bus itself
     (and cross-sector flags) needs its own outline-and-approval pass. Remaining life
     sectors (Life Goals, Learning Matrix, Spirituality, Health, Habits…) don't exist.

@@ -19,6 +19,7 @@ import {
   allOutliers, allCorrelations, allLaggedCorrelations, dismissInsight,
   touchDay, dayKey, dayOfYear, homeworkDueToday, homeworkOverdueCount,
   CONTACT_FREQUENCIES, contactNextDate, contactOverdue, contactDueToday, contactSyncTargets,
+  PROJECT_ZONES, PROJECT_STATES, projectAdd, projectEdit, projectMoveZone, projectSetState, projectRemove,
   exportBackup, parseBackup, normalizeStore, summarizeStore,
 } from "./store.js";
 import { supabase } from "./supabase.js";
@@ -827,6 +828,58 @@ const CSS = `
   font-family: var(--mono); font-size: 8px; line-height: 1; padding: 0; }
 .ct-pri-btn:hover { border-color: var(--holo-dim); color: var(--ghost); }
 .ct-pri-btn.active { background: var(--holo-deep); border-color: var(--holo); color: var(--holo); text-shadow: 0 0 6px rgba(79,227,255,0.6); }
+
+/* Project Tracker — own pt- prefix. Four zone clusters, scattered cards (not
+   a uniform grid, per CLAUDE.md's density/jitter rule), Zone 1 visually
+   distinct as a one-slot focus zone. No red anywhere — nothing here is an
+   alarm condition by design (see PROJECT_TRACKER_SPEC.md "targetDate is soft"). */
+.pt-board { margin-top: 4px; }
+.pt-add-row { display: flex; gap: 8px; align-items: center; margin-bottom: 18px; }
+.pt-add-in { flex: 1; max-width: 360px; background: rgba(6,12,24,0.4); border: 1px solid var(--panel-line);
+  color: var(--ghost); font-family: var(--mono); font-size: 11px; padding: 7px 10px; outline: none; }
+.pt-add-in::placeholder { color: var(--holo-dim); opacity: 0.6; }
+.pt-add-in:focus { border-color: var(--holo-dim); }
+.pt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px 20px; align-items: start; }
+.pt-zone-one { grid-column: span 1; }
+.pt-cluster { display: flex; flex-wrap: wrap; gap: 10px 14px; margin-top: 8px; }
+.pt-zone-one .pt-cluster { flex-direction: column; }
+
+.pt-card { width: 168px; background: rgba(6,12,24,0.45); border: 1px solid var(--panel-line);
+  padding: 8px 9px 7px; display: flex; flex-direction: column; gap: 5px; position: relative; }
+/* scattered jitter, CSS-driven like the dashboard tile field — not inline
+   randomization, so re-renders never reshuffle the look */
+.pt-cluster > .pt-card:nth-child(3n) { transform: rotate(-0.8deg); }
+.pt-cluster > .pt-card:nth-child(3n+1) { transform: rotate(0.6deg); }
+.pt-cluster > .pt-card:nth-child(5n) { transform: rotate(-0.4deg) translateY(2px); }
+.pt-card.big { width: 220px; padding: 12px 13px 10px; }
+.pt-card.archived { opacity: 0.55; }
+.pt-card.archived .pt-name { text-decoration: line-through; }
+.pt-card-top { display: flex; align-items: flex-start; gap: 6px; }
+.pt-name { flex: 1; background: transparent; border: none; outline: none; resize: none; overflow: hidden;
+  color: var(--ghost); font-family: var(--mono); font-size: 11px; line-height: 1.3; padding: 0;
+  border-bottom: 1px dashed transparent; }
+.pt-name:hover { border-bottom-color: rgba(79,227,255,0.22); }
+.pt-name:focus { border-bottom-color: var(--holo); }
+.pt-name::placeholder { color: var(--holo-dim); opacity: 0.6; }
+.pt-card-row { display: flex; align-items: center; gap: 6px; }
+.pt-state { font-family: var(--mono); font-size: 8px; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 3px 7px; border: 1px solid var(--panel-line); background: transparent; cursor: pointer; }
+.pt-state-active { color: var(--holo); border-color: var(--holo-dim); text-shadow: 0 0 5px rgba(79,227,255,0.4); }
+.pt-state-standby { color: var(--gold); border-color: var(--gold); opacity: 0.85; }
+.pt-state-dormant { color: var(--holo-dim); }
+.pt-state-archived { color: var(--ghost-dim); opacity: 0.7; }
+.pt-zone-select { flex: 1; background: transparent; border: 1px solid var(--panel-line); color: var(--holo-dim);
+  font-family: var(--mono); font-size: 8px; padding: 3px 4px; cursor: pointer; color-scheme: dark; }
+.pt-zone-select option { background: var(--panel); color: var(--ghost); }
+.pt-target-lab { font-family: var(--mono); font-size: 8px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--holo-dim); }
+.pt-target { background: transparent; border: none; outline: none; color: var(--ghost-dim);
+  font-family: var(--mono); font-size: 9px; padding: 1px 0; color-scheme: dark; }
+.pt-notes-toggle { align-self: flex-start; background: none; border: none; cursor: pointer; padding: 0;
+  font-family: var(--mono); font-size: 8px; letter-spacing: 0.06em; color: var(--holo-dim); }
+.pt-notes-toggle:hover { color: var(--ghost); }
+.pt-notes { background: rgba(6,12,24,0.4); border: 1px solid var(--panel-line); color: var(--ghost-dim);
+  font-family: var(--mono); font-size: 9px; padding: 5px 6px; outline: none; resize: none; overflow: hidden; }
+.pt-notes:focus { border-color: var(--holo-dim); }
 
 .do-task-row { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--panel-line); }
 .do-task-row:last-of-type { border-bottom: none; }
@@ -2515,6 +2568,82 @@ function ContactRoster({ items, onAdd, onSet, onRemove }) {
   );
 }
 
+// Project Tracker — zone board. See docs/specs/PROJECT_TRACKER_SPEC.md: zone and
+// state meanings are INFERRED this session, not confirmed. Four zone clusters
+// (Zone L/S/1/Shelf), each a scattered cluster of cards rather than a uniform
+// grid — Zone 1 is visually distinct (one large card slot) since it's enforced
+// single-occupant by projectMoveZone in store.js.
+const PT_ZONE_META = {
+  L: { label: "Zone L", tag: "long-term / large" },
+  S: { label: "Zone S", tag: "short-term / small" },
+  "1": { label: "Zone 1", tag: "current focus · one slot" },
+  shelf: { label: "The Shelf", tag: "parked · not yet promoted" },
+};
+const PT_STATE_CYCLE = PROJECT_STATES; // Active → Standby → Dormant → Archived → Active…
+
+function ProjectCard({ p, onEdit, onMoveZone, onSetState, onRemove, big }) {
+  const [open, setOpen] = useState(false);
+  const cycleState = () => onSetState(p.id, PT_STATE_CYCLE[(PT_STATE_CYCLE.indexOf(p.state) + 1) % PT_STATE_CYCLE.length]);
+  return (
+    <div className={"pt-card" + (big ? " big" : "") + (p.state === "Archived" ? " archived" : "")}>
+      <div className="pt-card-top">
+        <AutoText className="pt-name" value={p.name} placeholder="untitled project"
+          onChange={e => onEdit(p.id, "name", e.target.value)} />
+        <button className="do-x" onClick={() => onRemove(p.id)} aria-label="Remove project">✕</button>
+      </div>
+      <div className="pt-card-row">
+        <button className={"pt-state pt-state-" + p.state.toLowerCase()} onClick={cycleState}>{p.state}</button>
+        <select className="pt-zone-select" value={p.zone} onChange={e => onMoveZone(p.id, e.target.value)}>
+          {PROJECT_ZONES.map(z => <option key={z} value={z}>{PT_ZONE_META[z].label}</option>)}
+        </select>
+      </div>
+      <div className="pt-card-row">
+        <span className="pt-target-lab">target</span>
+        <input className="pt-target" type="date" value={p.targetDate} onChange={e => onEdit(p.id, "targetDate", e.target.value)} />
+      </div>
+      <button className="pt-notes-toggle" onClick={() => setOpen(o => !o)}>{open ? "▲ notes" : "▼ notes" + (p.notes ? " ·" : "")}</button>
+      {open && (
+        <AutoText className="pt-notes" value={p.notes} placeholder="—"
+          onChange={e => onEdit(p.id, "notes", e.target.value)} />
+      )}
+    </div>
+  );
+}
+
+function ProjectTracker({ projects, onAdd, onEdit, onMoveZone, onSetState, onRemove }) {
+  const [newName, setNewName] = useState("");
+  const submitAdd = () => { onAdd(newName); setNewName(""); };
+  const byZone = (z) => projects.filter(p => p.zone === z);
+  return (
+    <div className="pt-board">
+      <div className="pt-add-row">
+        <input className="pt-add-in" value={newName} placeholder="new project name — lands in The Shelf"
+          onChange={e => setNewName(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter" && newName.trim()) submitAdd(); }} />
+        <button className="do-add" onClick={() => newName.trim() && submitAdd()}>+ add project</button>
+      </div>
+      <div className="pt-grid">
+        {PROJECT_ZONES.map(z => {
+          const items = byZone(z);
+          const meta = PT_ZONE_META[z];
+          const isOne = z === "1";
+          return (
+            <section key={z} className={"pt-zone" + (isOne ? " pt-zone-one" : "")}>
+              <div className="wk-mod-head"><span>{meta.label}</span><span className="wk-tag">{meta.tag} · {items.length}</span></div>
+              {items.length === 0 && <div className="do-empty">{isOne ? "no current focus set" : "empty"}</div>}
+              <div className="pt-cluster">
+                {items.map(p => (
+                  <ProjectCard key={p.id} p={p} big={isOne} onEdit={onEdit} onMoveZone={onMoveZone} onSetState={onSetState} onRemove={onRemove} />
+                ))}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // Number-input step/bounds per metric kind — shared by day cells and the Goal
 // column. sumFraction rows (Temple?, Finance Review?, Reflection?) get a Goal
 // that's a target COUNT out of 7, not a 0/1 toggle — the sheet's own goal
@@ -3920,6 +4049,7 @@ function GridApp({ authSession, onSignOut }) {
     if (s.key === "metricsOutsourcing") { setScreen("metricsOutsourcing"); return; }
     if (s.key === "dailyOverview") { setScreen("dailyOverview"); return; }
     if (s.key === "contactTracker") { setScreen("contactTracker"); return; }
+    if (s.key === "projects") { setScreen("projects"); return; }
     setSector(s); setScreen("zone");
   };
   const cycleMood = () => setMoodIdx(i => (i + 1) % MOOD_CYCLE.length);
@@ -3935,6 +4065,7 @@ function GridApp({ authSession, onSignOut }) {
   const weekly = store.weekly;
   const daily = store.daily;
   const contactTracker = store.contactTracker;
+  const projectTracker = store.projectTracker;
   const budgetFlags = activeFlags(budget, now);
 
   // ── weekly writers ──
@@ -4045,6 +4176,14 @@ function GridApp({ authSession, onSignOut }) {
     ...ct, contacts: ct.contacts.map(x => (x.id === id ? { ...x, [field]: v } : x)),
   }));
   const contactRemove = (id) => writeContactTracker(ct => ({ ...ct, contacts: ct.contacts.filter(x => x.id !== id) }));
+
+  // ── project tracker writers ── (mutators live in store.js, see PROJECT_TRACKER_SPEC.md)
+  const writeProjectTracker = (fn) => setStore(s => saveStore({ ...s, projectTracker: fn(s.projectTracker) }));
+  const projAdd = (name) => writeProjectTracker(pt => projectAdd(pt, name));
+  const projEdit = (id, field, v) => writeProjectTracker(pt => projectEdit(pt, id, field, v));
+  const projMoveZone = (id, zone) => writeProjectTracker(pt => projectMoveZone(pt, id, zone));
+  const projSetState = (id, state) => writeProjectTracker(pt => projectSetState(pt, id, state));
+  const projRemove = (id) => writeProjectTracker(pt => projectRemove(pt, id));
 
   // ── backup / restore ── (see exportBackup/parseBackup in store.js)
   const importRef = useRef(null);
@@ -4293,7 +4432,7 @@ function GridApp({ authSession, onSignOut }) {
         {screen !== "lock" && screen !== "boot" && (
           <div className="topbar">
             <div className="tb-left">
-              {screen === "zone" || screen === "allsectors" || screen === "budget" || screen === "weekly" || screen === "metricsOutsourcing" || screen === "dailyOverview" || screen === "contactTracker"
+              {screen === "zone" || screen === "allsectors" || screen === "budget" || screen === "weekly" || screen === "metricsOutsourcing" || screen === "dailyOverview" || screen === "contactTracker" || screen === "projects"
                 ? <button className="tb-back" onClick={() => setScreen("dashboard")}>◄ grid dashboard</button>
                 : <span className="live"><span className="dot-live" />the grid // online</span>}
             </div>
@@ -4811,6 +4950,17 @@ function GridApp({ authSession, onSignOut }) {
           </div>
         )}
 
+        {screen === "projects" && (
+          <div className="zoneview fade-up">
+            <div className="zv-head">
+              <span className="zv-code">◆</span>
+              <span className="zv-name">Project Tracker · live sector</span>
+            </div>
+            <ProjectTracker projects={projectTracker.projects}
+              onAdd={projAdd} onEdit={projEdit} onMoveZone={projMoveZone} onSetState={projSetState} onRemove={projRemove} />
+          </div>
+        )}
+
         {screen === "zone" && sector && (
           <div className="zoneview fade-up">
             <div className="zv-head"><span className="zv-code">{sector.glyph}</span>
@@ -4818,7 +4968,7 @@ function GridApp({ authSession, onSignOut }) {
             <div className="empty">
               <div className="empty-ring"><span>{sector.glyph}</span></div>
               <div className="empty-t">no signals in this sector</div>
-              <div className="empty-s">{sector.locked ? "real structure lands later in the life-os expansion" : "project data populates as zones L/S/1/shelf get built"}</div>
+              <div className="empty-s">real structure lands later in the life-os expansion</div>
             </div>
           </div>
         )}

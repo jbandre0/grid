@@ -186,6 +186,13 @@ const DEFAULT_STORE = {
   contactTracker: {
     contacts: [], // { id, name, category, lastContact, frequency, priority, method, location, notes }
   },
+  // Project Tracker — see docs/specs/PROJECT_TRACKER_SPEC.md. Zone/state
+  // meanings are INFERRED, not confirmed by the user — flagged prominently in
+  // that spec and in BUILD_STATE.md. Zone 1 is enforced as single-occupant by
+  // projectMoveZone below.
+  projectTracker: {
+    projects: [], // { id, name, zone, state, notes, targetDate, createdAt, updatedAt }
+  },
   // One-directional write target for Close Week. Weekly Overview never reads
   // this back. Weekly Metrics Outsourcing (Build 1) is the passive read-only
   // archive on the receiving end — it displays these rows, it never writes them.
@@ -222,6 +229,7 @@ function mergeDefaults(parsed) {
     weekly: { ...structuredClone(DEFAULT_STORE.weekly), ...(parsed.weekly || {}) },
     daily: { ...structuredClone(DEFAULT_STORE.daily), ...(parsed.daily || {}) },
     contactTracker: { ...structuredClone(DEFAULT_STORE.contactTracker), ...(parsed.contactTracker || {}) },
+    projectTracker: { ...structuredClone(DEFAULT_STORE.projectTracker), ...(parsed.projectTracker || {}) },
     // steps only merge forward if the template was never touched — once the
     // user has edited it, their list wins outright and defaults never re-add
     ritual: parsed.ritual?.steps?.length ? parsed.ritual : structuredClone(DEFAULT_STORE.ritual),
@@ -241,7 +249,7 @@ export function hasUserData(s) {
   if (!s || typeof s !== "object") return false;
   const filled = (v) => typeof v === "string" ? v.trim() !== "" : v != null;
   const anyFilled = (arr) => Array.isArray(arr) && arr.some(x => (typeof x === "object" && x ? (x.text ?? x.name ?? "") !== "" || Object.keys(x).length > 2 : filled(x)));
-  const w = s.weekly || {}, d = s.daily || {}, c = s.contactTracker || {}, mo = s.metricsOutsourcing || {}, b = s.budget || {};
+  const w = s.weekly || {}, d = s.daily || {}, c = s.contactTracker || {}, p = s.projectTracker || {}, mo = s.metricsOutsourcing || {}, b = s.budget || {};
   if (filled(w.theme) || anyFilled(w.priorities) || (w.tasks || []).length || (w.goals || []).length) return true;
   if (filled(w.stopStart?.stop) || filled(w.stopStart?.start)) return true;
   if (Object.keys(w.ritualChecked || {}).length || Object.keys(w.metrics || {}).length) return true;
@@ -251,6 +259,7 @@ export function hasUserData(s) {
   if ((d.priorities || []).length || (d.tasks || []).length || (d.goals || []).length || (d.people || []).length || (d.homework || []).length) return true;
   if (Object.values(d.reflection || {}).some(filled)) return true;
   if ((c.contacts || []).length) return true;
+  if ((p.projects || []).length) return true;
   if ((mo.rows || []).length) return true;
   const recs = [...(b.capital?.accounts || []), ...(b.capital?.monthlyLog || []), ...(b.assets || []), ...(b.oweLedger || []),
     ...(b.categories || []), ...(b.spendEntries || []), ...(b.netWorthLog || [])];
@@ -263,6 +272,7 @@ export function summarizeStore(s) {
   const w = s?.weekly || {}, d = s?.daily || {};
   return {
     contacts: s?.contactTracker?.contacts?.length || 0,
+    projects: s?.projectTracker?.projects?.length || 0,
     weeklyItems: (w.tasks?.length || 0) + (w.goals?.length || 0),
     dailyItems: (d.tasks?.length || 0) + (d.priorities?.length || 0) + (d.goals?.length || 0) + (d.homework?.length || 0),
     archivedWeeks: s?.metricsOutsourcing?.rows?.length || 0,
@@ -294,7 +304,7 @@ export function parseBackup(text) {
   let obj;
   try { obj = JSON.parse(text); } catch { return { ok: false, error: "not valid JSON" }; }
   if (obj?.app !== "the-grid" || !obj.store || typeof obj.store !== "object") return { ok: false, error: "not a THE GRID backup file" };
-  for (const k of ["budget", "weekly", "daily", "contactTracker", "metricsOutsourcing"]) {
+  for (const k of ["budget", "weekly", "daily", "contactTracker", "projectTracker", "metricsOutsourcing"]) {
     if (obj.store[k] != null && (typeof obj.store[k] !== "object" || Array.isArray(obj.store[k]))) return { ok: false, error: `backup has a malformed "${k}" section` };
   }
   return { ok: true, store: mergeDefaults(obj.store), exportedAt: obj.exportedAt };
@@ -441,6 +451,45 @@ export function contactOverdue(contact, now = new Date()) {
 }
 export function contactDueToday(contact, now = new Date()) {
   return contactNextDate(contact) === dayKey(now);
+}
+
+// ── Project Tracker ──
+// See docs/specs/PROJECT_TRACKER_SPEC.md — zone/state meanings are INFERRED,
+// not confirmed by the user. Pure mutators, same shape as Budget's
+// logSpend/undoSpend/removeCategory: each takes the slice and returns a new
+// one, generating its own id where one's needed.
+const ptNewId = () => globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2, 10);
+export const PROJECT_ZONES = ["L", "S", "1", "shelf"];
+export const PROJECT_STATES = ["Active", "Standby", "Dormant", "Archived"];
+
+// New projects default into The Shelf regardless of what's passed — see spec
+// "Add flow": a new idea starts unsorted, the user promotes it deliberately.
+export function projectAdd(pt, name = "") {
+  const k = dayKey();
+  const project = { id: ptNewId(), name: String(name || "").trim(), zone: "shelf", state: "Active",
+    notes: "", targetDate: "", createdAt: k, updatedAt: k };
+  return { ...pt, projects: [...pt.projects, project] };
+}
+export function projectEdit(pt, id, field, value) {
+  return { ...pt, projects: pt.projects.map(p => p.id === id ? { ...p, [field]: value, updatedAt: dayKey() } : p) };
+}
+export function projectRemove(pt, id) {
+  return { ...pt, projects: pt.projects.filter(p => p.id !== id) };
+}
+// Zone 1 is enforced single-occupant (see spec): moving a project IN evicts
+// whatever was already there back to Zone L, never deleting or archiving it.
+export function projectMoveZone(pt, id, zone) {
+  if (!PROJECT_ZONES.includes(zone)) return pt;
+  const k = dayKey();
+  let projects = pt.projects.map(p => p.id === id ? { ...p, zone, updatedAt: k } : p);
+  if (zone === "1") {
+    projects = projects.map(p => (p.id !== id && p.zone === "1") ? { ...p, zone: "L", updatedAt: k } : p);
+  }
+  return { ...pt, projects };
+}
+export function projectSetState(pt, id, state) {
+  if (!PROJECT_STATES.includes(state)) return pt;
+  return { ...pt, projects: pt.projects.map(p => p.id === id ? { ...p, state, updatedAt: dayKey() } : p) };
 }
 
 // ── Daily Overview → Contact Tracker sync (Module 3, real for this build) ──
