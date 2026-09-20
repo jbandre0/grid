@@ -844,6 +844,15 @@ const CSS = `
 .pt-zone-one { grid-column: span 1; }
 .pt-cluster { display: flex; flex-wrap: wrap; gap: 10px 14px; margin-top: 8px; }
 .pt-zone-one .pt-cluster { flex-direction: column; }
+/* every zone is its own instrument module — same panel/corner-tick language
+   as .bz-mod, so the board reads as cockpit panels, not bare column headers */
+.pt-zone { position: relative; background: var(--panel); border: 1px solid var(--panel-line);
+  padding: 10px 12px 14px; min-height: 96px; }
+.pt-zone::before, .pt-zone::after { content: ""; position: absolute; width: 9px; height: 9px;
+  border: 1px solid var(--holo); opacity: 0.45; pointer-events: none; }
+.pt-zone::before { top: 4px; right: 4px; border-left: none; border-bottom: none; }
+.pt-zone::after { bottom: 4px; left: 4px; border-right: none; border-top: none; }
+.pt-zone-one { border-color: rgba(79,227,255,0.4); background: rgba(79,227,255,0.04); }
 
 .pt-card { width: 168px; background: rgba(6,12,24,0.45); border: 1px solid var(--panel-line);
   padding: 8px 9px 7px; display: flex; flex-direction: column; gap: 5px; position: relative; }
