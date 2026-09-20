@@ -9,3 +9,7 @@ private/
 
 # per-machine Claude Code permission list (contains local file paths)
 .claude/settings.local.json
+
+# isolated worktrees spun up for background build agents — local scaffolding,
+# not project content
+.claude/worktrees/
