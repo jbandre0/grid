@@ -1,5 +1,24 @@
 # THE GRID — Build State
 
+## Session (unsupervised build, 2026-09-20)
+
+Built autonomously on branch `feature/contact-tracker-project-tracker-life-goals` per
+explicit authorization to work while the user was away (approval-before-building
+waived for this session only). **Everything below marked "unilateral decision" needs
+the user's review** — nothing here is confirmed, all of it is the most conservative/
+reversible reading of the existing terminology and patterns. See each sector's section
+and spec doc for full detail; summary:
+
+1. **Contact Tracker increments 3–4** — done, see its section below.
+2. **Project Tracker** — built from zero, first real structure. **Zone L/S/1/Shelf and
+   the state machine are inferred, not confirmed** — see
+   `docs/specs/PROJECT_TRACKER_SPEC.md`, flagged there explicitly.
+3. **Life Goals** — new sector, doesn't exist before this session at all. **Tier
+   structure (Life → Year → Quarter) is inferred, not confirmed** — see
+   `docs/specs/LIFE_GOALS_SPEC.md`.
+
+---
+
 Runnable Vite + React project (`npm install && npm run dev`; `npm run test:sync` runs the
 sync-engine tests, `npm run test:budget` the Budget logic tests). Layout: `src/App.jsx` (all
 UI + inline CSS), `src/store.js` (persistence + derivations + Budget mutators),
@@ -179,18 +198,29 @@ user's Gmail as author; they explicitly said that's fine.
   - Styling uses its own `do-` CSS prefix (per-sector convention: `bz-`/`wk-`/`mo-`/`do-`/
     `ct-`); `wk-mod-head`/`wk-tag` are the shared exceptions.
 - **Contact Tracker sector** (`screen === "contactTracker"`, **not pinned**, glyph **◫**) —
-  **increments 1–2 of 4 built** per **`docs/specs/CONTACT_TRACKER_SPEC.md`**: `contactTracker`
+  **increments 1–4 of 4 built** per **`docs/specs/CONTACT_TRACKER_SPEC.md`**: `contactTracker`
   slice + the **Roster** table (Name, Category, Last Contact, Frequency, computed Next
-  Contact, Priority 1–5, Method, Location, Notes; add/edit/remove).
+  Contact, Priority 1–5, Method, Location, Notes; add/edit/remove), overdue/due-today
+  sorting + alarm styling, and the Daily Overview sync wire-up.
   - **Next Contact is derived, never stored** (`contactNextDate`): `lastContact +
     CONTACT_INTERVAL_DAYS[frequency]`, reverse-engineered from the user's sheet.
     **Biweekly = +3d and Bimonthly = +14d — swapped from dictionary meaning, deliberately;
     don't "fix" it.** Frequency is a controlled set; Category/Method/Location/Notes are
-    freeform. `contactOverdue`/`contactDueToday` exist but nothing uses them yet.
+    freeform.
+  - **Roster display-sorts** overdue first (most overdue first), then due-today, then
+    the rest by soonest Next Contact (`sortRoster()` — display-only, stored order is
+    untouched). Overdue rows get a red left-border/wash, due-today a **gold** one —
+    **unilateral decision**: the spec text only said "red border/glow when overdue";
+    gold-for-due-today was added to mirror Budget's existing gold=caution/red=alarm
+    split rather than making "due today" read as loud as "actually late."
+  - **Daily Overview's "People to Reach Out To"** now pulls real overdue/due-today
+    contacts via `contactSyncTargets()` (store.js) — replaced the inert "not wired yet"
+    banner with a read-only list, same red/gold language as the Roster. The manual
+    "Extras" list (`daily.people`) is untouched, still layered on top.
   - **Roster ships blank** — the user's 27 real contacts were deliberately NOT seeded.
-  - **Next (unbuilt):** overdue/due-today sorting + alarm styling; then wire Daily
-    Overview's People stub for real. **Deferred:** the sheet's "Scheduled Calls" block
-    (Who/Day/Time/Status/Calendar?, 4 rows) and any dashboard tile.
+  - **Deferred, not built this session:** the sheet's "Scheduled Calls" block
+    (Who/Day/Time/Status/Calendar?, 4 rows) and any dashboard tile — time went to
+    Project Tracker and Life Goals instead, per the session's task order.
 - **Weekly Metrics Outsourcing sector** (`screen === "metricsOutsourcing"`, live, **not**
   pinned, glyph **▥**) — passive read-only archive + analysis toolkit for Weekly
   Overview's closed weeks. Full brief in **`docs/specs/WEEKLY_METRICS_OUTSOURCING_SPEC.md`**.
@@ -297,8 +327,9 @@ user's Gmail as author; they explicitly said that's fine.
    before financial text leaves the device).
 2. **Automated authenticated sync test** — real login works (user-confirmed), but nothing
    automated covers a live push/pull round trip. A throwaway test user was offered; unanswered.
-3. **Contact Tracker increments 3–4** — overdue sorting/alarm styling, then wire Daily
-   Overview's People stub. Then Scheduled Calls and a tile if wanted.
+3. **Contact Tracker — done except deferred pieces.** Increments 1–4 all built (see
+   its section above). Still open: the "Scheduled Calls" block and a dashboard tile,
+   deferred per the spec.
 4. **Former "two bugs" — resolved.** (a) Weekly Overview showing as "not yet built" was a
    trailing U+FE0F on the sheet emoji; fixed by stripping variation selectors/joiners in
    `ALL_SECTORS` (live count is now 6/35). (b) "Enter-to-add-row concatenates" is **not an

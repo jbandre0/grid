@@ -443,6 +443,18 @@ export function contactDueToday(contact, now = new Date()) {
   return contactNextDate(contact) === dayKey(now);
 }
 
+// ── Daily Overview → Contact Tracker sync (Module 3, real for this build) ──
+// Live-computed, not stored — same reasoning as Homework's overdue count.
+// Overdue contacts sort first (most overdue first), then due-today; each
+// carries `overdue`/`dueToday` so the UI can style them apart.
+export function contactSyncTargets(contactTracker, now = new Date()) {
+  const contacts = contactTracker?.contacts || [];
+  return contacts
+    .map(c => ({ ...c, overdue: contactOverdue(c, now), dueToday: contactDueToday(c, now), next: contactNextDate(c) }))
+    .filter(c => c.overdue || c.dueToday)
+    .sort((a, b) => (b.overdue - a.overdue) || (a.next || "").localeCompare(b.next || ""));
+}
+
 export const ritualDone = (store) => {
   const steps = store.ritual?.steps || [];
   const checked = store.weekly?.ritualChecked || {};

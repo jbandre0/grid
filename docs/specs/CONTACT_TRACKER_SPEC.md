@@ -1,8 +1,9 @@
 # THE GRID — Contact Tracker Sector Spec
 
-**Status: foundation + Roster built (increments 1–2 of 4). Overdue sorting/alarm and
-the Daily Overview sync wire-up are next.** This document is the build
-brief, kept current as each increment lands.
+**Status: increments 1–3 of 4 built** (foundation, Roster, overdue/due-today sorting +
+alarm styling, and the Daily Overview sync wire-up — increment 4 landed alongside 3
+since it's a thin consumer of the same derived data). **Scheduled Calls (deferred)
+still not built.** This document is the build brief, kept current as each increment lands.
 
 Contact Tracker is a roster with real derived logic, not a log: each contact carries a
 Last Contact date and a Frequency, and **Next Contact is computed, never typed in** —
@@ -66,18 +67,28 @@ Add/edit/remove contacts. Fields: Name, Category, Last Contact (date), Frequency
 (controlled set, see above), Priority (1–5), Method, Location, Notes. Next Contact
 renders read-only, computed live — never an input field.
 
-## Module 2 — Overdue / due-today sorting + alarm styling
-Same visual language as Daily Overview's Homework alarm state: live-computed
-(`contactOverdue`/`contactDueToday` in `store.js`), red border/glow when overdue — NOT
-routed through Budget's persisted/dismissable `deriveFlags`/`activeFlags`/`dismissFlag`
-engine, which stays Budget-specific until the real cross-sector notification bus gets
-its own approval pass (see BUILD_STATE.md open items).
+## Module 2 — Overdue / due-today sorting + alarm styling — BUILT
+Live-computed (`contactOverdue`/`contactDueToday` in `store.js`), NOT routed through
+Budget's persisted/dismissable `deriveFlags`/`activeFlags`/`dismissFlag` engine, which
+stays Budget-specific until the real cross-sector notification bus gets its own
+approval pass (see BUILD_STATE.md open items). The Roster display-sorts overdue first
+(most overdue first), then due-today, then everything else by soonest Next Contact —
+stored order (insertion) is untouched, same convention as Homework's display sort.
+Overdue rows get a red left-border/wash (`--alarm`); due-today rows get a **gold**
+left-border/wash (`--gold`), one step down — this is a design decision beyond what the
+spec originally asked for ("red border/glow when overdue"): gold-for-due-today mirrors
+Budget's gold-vs-red (caution vs alarm) split rather than inventing a third look, and
+reads better than making "due today" as loud as "actually late." The `wk-mod-head` tag
+also surfaces live overdue/due-today counts.
 
-## Module 3 — Wire Daily Overview's sync stub for real
-"People to Reach Out To" starts pulling contacts where `contactDueToday` or
-`contactOverdue` is true, replacing the inert "not wired yet" banner. The manual
-"Extras" list (`daily.people`) stays layered on top exactly as already built — this
-is additive, not a replacement of that list.
+## Module 3 — Wire Daily Overview's sync stub for real — BUILT
+"People to Reach Out To" now pulls contacts where `contactDueToday` or `contactOverdue`
+is true, via a new `contactSyncTargets(contactTracker, now)` helper in `store.js` (mirrors
+each contact with `overdue`/`dueToday`/`next` and sorts overdue-first). The banner is
+replaced by a real, read-only list (name + overdue/due-today tag, same red/gold
+language as the Roster) — editing still happens in the Roster itself, not inline here.
+The manual "Extras" list (`daily.people`) stays layered on top exactly as already
+built, unchanged.
 
 ---
 
@@ -99,15 +110,16 @@ is additive, not a replacement of that list.
    unlocked (glyph `◫`), `screen === "contactTracker"` routing shell. No visible
    roster UI yet.
 2. **Roster** module.
-3. **Overdue/due-today sorting + alarm styling**.
-4. **Wire Daily Overview's People sync stub for real.**
+3. **Overdue/due-today sorting + alarm styling.** — BUILT
+4. **Wire Daily Overview's People sync stub for real.** — BUILT
 
 ---
 
 ## Where things live
 
 - `store.js`: `CONTACT_INTERVAL_DAYS`, `CONTACT_FREQUENCIES`, `contactNextDate()`,
-  `contactOverdue()`, `contactDueToday()`, `DEFAULT_STORE.contactTracker`.
+  `contactOverdue()`, `contactDueToday()`, `contactSyncTargets()`,
+  `DEFAULT_STORE.contactTracker`.
 - `App.jsx`: `ALL_SECTORS` carries `{ key: "contactTracker", glyph: "◫", locked: false }`
   (not in `PINNED_SECTORS`); `openSector` special-cases it to
   `screen === "contactTracker"`; routed inline, not as a separate component (matches
@@ -116,3 +128,8 @@ is additive, not a replacement of that list.
   - Component: `ContactRoster` — dense table, own `ct-` prefixed CSS (see the
     per-sector convention note at its CSS block), reuses `do-mod`/`do-empty`/`do-x`/
     `do-add` and `wk-mod-head`/`wk-tag` since those carry no sector-specific meaning.
+    Display-sorted via `sortRoster()` (overdue → due-today → rest by soonest Next
+    Contact); `overdue`/`due-today` row classes drive the red/gold styling.
+  - Daily Overview's synced "People to Reach Out To" module reads
+    `contactSyncTargets(contactTracker)` (memoized as `contactSyncList`) and renders a
+    read-only `.ct-sync-row` list, same red/gold language as the Roster.

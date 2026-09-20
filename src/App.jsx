@@ -18,7 +18,7 @@ import {
   metricGoalStreak, metricTrendStreak, allActiveStreaks, metricOutliers,
   allOutliers, allCorrelations, allLaggedCorrelations, dismissInsight,
   touchDay, dayKey, dayOfYear, homeworkDueToday, homeworkOverdueCount,
-  CONTACT_FREQUENCIES, contactNextDate, contactOverdue, contactDueToday,
+  CONTACT_FREQUENCIES, contactNextDate, contactOverdue, contactDueToday, contactSyncTargets,
   exportBackup, parseBackup, normalizeStore, summarizeStore,
 } from "./store.js";
 import { supabase } from "./supabase.js";
@@ -744,13 +744,6 @@ const CSS = `
 .do-rank { font-family: var(--mono); font-size: 9px; color: var(--holo-dim); letter-spacing: 0.1em; width: 16px; flex-shrink: 0; }
 .do-bullet { font-size: 10px; color: var(--holo-dim); width: 16px; flex-shrink: 0; text-align: center; }
 
-/* Honest "not wired yet" banner — visible, not hidden, same idiom as Kaniel's
-   narration stub. Dashed border reads as "placeholder," distinct from a real module. */
-.do-sync-stub { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 8px 12px;
-  border: 1px dashed var(--panel-line); background: rgba(6,12,24,0.3);
-  font-family: var(--mono); font-size: 9px; color: var(--holo-dim); letter-spacing: 0.04em; }
-.do-sync-lab { text-transform: uppercase; letter-spacing: 0.14em; color: var(--ghost-dim); flex-shrink: 0; }
-
 /* Homework/Deadlines — dense 6-column + remove-button grid, columns verbatim
    from the source sheet. Narrower fixed widths for the date/time/status
    columns, Task gets the most room since it's the longest freeform field. */
@@ -806,6 +799,28 @@ const CSS = `
 .ct-select { cursor: pointer; }
 .ct-select option { background: var(--panel); color: var(--ghost); }
 .ct-next { font-family: var(--mono); font-size: 10px; color: var(--holo-dim); }
+/* Overdue/due-today — red = genuine alarm (past due), gold = caution (due
+   today), same gold-vs-red split as Budget's flags. Left border + wash reads
+   at a glance without needing to scan the Next Contact column. */
+.ct-row.overdue { border-left: 2px solid var(--alarm); padding-left: 6px; background: rgba(255,91,107,0.05); }
+.ct-row.overdue .ct-next { color: var(--alarm); text-shadow: 0 0 6px var(--alarm-glow); }
+.ct-row.due-today { border-left: 2px solid var(--gold); padding-left: 6px; background: rgba(255,209,102,0.05); }
+.ct-row.due-today .ct-next { color: var(--gold); }
+.ct-next-tag { font-size: 8px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.85; }
+.ct-next-tag.due { color: var(--gold); }
+.ct-tag-alarm { color: var(--alarm); }
+.ct-tag-due { color: var(--gold); }
+
+/* Daily Overview's synced People half — read-only, sourced live from Contact
+   Tracker (see contactSyncTargets in store.js). Same overdue/due-today split
+   as the Roster rows, reused here so the two views read as one language. */
+.ct-sync-row { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 4px 8px; margin-top: 3px; font-family: var(--mono); font-size: 10px; color: var(--ghost); }
+.ct-sync-row.overdue { border-left: 2px solid var(--alarm); background: rgba(255,91,107,0.05); }
+.ct-sync-row.due-today { border-left: 2px solid var(--gold); background: rgba(255,209,102,0.05); }
+.ct-sync-tag { font-size: 8px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.85; }
+.ct-sync-row.overdue .ct-sync-tag { color: var(--alarm); }
+.ct-sync-row.due-today .ct-sync-tag { color: var(--gold); }
 .ct-pri-group { display: flex; gap: 2px; }
 .ct-pri-btn { width: 14px; height: 15px; display: flex; align-items: center; justify-content: center;
   background: transparent; border: 1px solid var(--panel-line); color: var(--holo-dim); cursor: pointer;
@@ -2430,10 +2445,34 @@ function HomeworkTable({ items, onAdd, onSet, onRemove, onToggleDone }) {
 // contactNextDate needs to recognize the exact value) and Priority (1–5,
 // matches the source sheet's own scale, NOT Daily Overview's 1/2/3). Next
 // Contact is always read-only — it's derived, never typed in.
+// Overdue sorts first (oldest-next-date first, i.e. most overdue), then
+// due-today, then everything else by soonest next-date (nulls — no
+// lastContact/frequency yet — last, display order among themselves). Ties
+// within a bucket keep insertion order (stable sort). This is display-only,
+// same convention as Daily Overview's Homework auto-sort — stored order is
+// untouched so add/remove never reshuffles unrelated rows.
+function sortRoster(items) {
+  const bucket = (it) => contactOverdue(it) ? 0 : contactDueToday(it) ? 1 : 2;
+  return items
+    .map((it, i) => ({ it, i, b: bucket(it), next: contactNextDate(it) }))
+    .sort((a, b) => a.b - b.b || (a.next || "9999-99-99").localeCompare(b.next || "9999-99-99") || a.i - b.i)
+    .map(x => x.it);
+}
+
 function ContactRoster({ items, onAdd, onSet, onRemove }) {
+  const sorted = useMemo(() => sortRoster(items), [items]);
+  const overdueCount = items.filter(it => contactOverdue(it)).length;
+  const dueTodayCount = items.filter(it => contactDueToday(it)).length;
   return (
     <section className="do-mod f-rail ct-roster">
-      <div className="wk-mod-head"><span>Roster</span><span className="wk-tag">{items.length} contact{items.length === 1 ? "" : "s"}</span></div>
+      <div className="wk-mod-head">
+        <span>Roster</span>
+        <span className="wk-tag">
+          {items.length} contact{items.length === 1 ? "" : "s"}
+          {overdueCount > 0 && <span className="ct-tag-alarm"> · {overdueCount} overdue</span>}
+          {dueTodayCount > 0 && <span className="ct-tag-due"> · {dueTodayCount} due today</span>}
+        </span>
+      </div>
       {items.length === 0 && <div className="do-empty">no contacts logged yet</div>}
       {items.length > 0 && (
         <div className="ct-table">
@@ -2441,10 +2480,12 @@ function ContactRoster({ items, onAdd, onSet, onRemove }) {
             <span>Name</span><span>Category</span><span>Last Contact</span><span>Frequency</span>
             <span>Next Contact</span><span>Priority</span><span>Method</span><span>Location</span><span>Notes</span><span />
           </div>
-          {items.map(it => {
+          {sorted.map(it => {
             const next = contactNextDate(it);
+            const overdue = contactOverdue(it);
+            const dueToday = contactDueToday(it);
             return (
-              <div className="ct-row" key={it.id}>
+              <div className={"ct-row" + (overdue ? " overdue" : dueToday ? " due-today" : "")} key={it.id}>
                 <input className="ct-in" value={it.name} placeholder="—" onChange={e => onSet(it.id, "name", e.target.value)} />
                 <input className="ct-in" value={it.category} placeholder="—" onChange={e => onSet(it.id, "category", e.target.value)} />
                 <input className="ct-in" type="date" value={it.lastContact} onChange={e => onSet(it.id, "lastContact", e.target.value)} />
@@ -2452,7 +2493,7 @@ function ContactRoster({ items, onAdd, onSet, onRemove }) {
                   <option value="">—</option>
                   {CONTACT_FREQUENCIES.map(f => <option key={f} value={f}>{f}</option>)}
                 </select>
-                <span className="ct-next">{next || "—"}</span>
+                <span className="ct-next">{next || "—"}{overdue && <span className="ct-next-tag"> overdue</span>}{dueToday && <span className="ct-next-tag due"> today</span>}</span>
                 <span className="ct-pri-group">
                   {[1, 2, 3, 4, 5].map(p => (
                     <button key={p} className={"ct-pri-btn" + (it.priority === p ? " active" : "")}
@@ -3978,6 +4019,12 @@ function GridApp({ authSession, onSignOut }) {
     ...d, homework: d.homework.map(x => (x.id === id ? { ...x, done: !x.done } : x)),
   }));
 
+  // People to Reach Out To's synced half — live-computed from Contact
+  // Tracker, not stored here (see contactSyncTargets in store.js). Recomputes
+  // on every render since it's cheap and date-dependent; the Extras list
+  // below stays a separate, manually-entered daily list per the spec.
+  const contactSyncList = useMemo(() => contactSyncTargets(contactTracker), [contactTracker]);
+
   // ── budget writer ── (mutators live in store.js or in BudgetScreen itself)
   const writeBudget = (fn) => setStore(s => saveStore({ ...s, budget: fn(s.budget) }));
   // month-end: asked once per session ("later" hides it until next login, the banner
@@ -4709,13 +4756,20 @@ function GridApp({ authSession, onSignOut }) {
               items={daily.goals} empty="no goals set for today"
               onAdd={dailyListAdd("goals")} onSet={dailyListSet("goals")} onRemove={dailyListRemove("goals")} />
 
-            {/* Honest inert placeholder — same idiom as Kaniel's narration stub in
-                Weekly Metrics Outsourcing. Contact Tracker doesn't exist yet, so this
-                never fakes a synced list; see docs/specs/DAILY_OVERVIEW_SPEC.md Module 6. */}
-            <div className="do-sync-stub">
-              <span className="do-sync-lab">People to Reach Out To</span>
-              <span>synced from contact tracker — not wired yet, sector not built</span>
-            </div>
+            {/* Real sync, Module 3 of the Contact Tracker spec — pulls contacts where
+                contactOverdue/contactDueToday is true. Read-only here; edit the
+                contact itself in the Roster. The manual Extras list stays layered
+                on top, unchanged. */}
+            <section className="do-mod f-tick ct-sync">
+              <div className="wk-mod-head"><span>People to Reach Out To</span><span className="wk-tag">synced from contact tracker</span></div>
+              {contactSyncList.length === 0 && <div className="do-empty">no overdue or due-today contacts</div>}
+              {contactSyncList.map(c => (
+                <div className={"ct-sync-row" + (c.overdue ? " overdue" : " due-today")} key={c.id}>
+                  <span className="ct-sync-name">{c.name || "—"}</span>
+                  <span className="ct-sync-tag">{c.overdue ? "overdue" : "due today"}</span>
+                </div>
+              ))}
+            </section>
             <DailyRankedList
               title="Extras" tag="manually flagged · persists across days"
               items={daily.people} empty="no extra names flagged for today"
